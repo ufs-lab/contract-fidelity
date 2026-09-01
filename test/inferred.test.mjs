@@ -298,3 +298,16 @@ test("a shape that is cast into holds values the census never saw", () => {
     false,
   );
 });
+
+test("a whole object of another type flowing into a slot is a write", () => {
+  // `useSlot(x)` where x: Src and Src.v is optional. The per-field census
+  // sees only the one literal that supplies Slot.v; the whole-object flow is
+  // what can make it absent. TrendArrow.trendPercentage was reported for
+  // this, and narrowing it produced six compile errors.
+  const rows = JSON.parse(run(["widening", "--json"])).filter(
+    (r) => r.file === "app/census.ts",
+  );
+  assert.equal(rows.some((r) => r.declared.includes("v?: number")), false);
+  const dead = JSON.parse(run(["dead-code", "--json"]));
+  assert.equal(dead.some((r) => r.guard.includes("s.v")), false);
+});
