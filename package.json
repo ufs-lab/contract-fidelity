@@ -20,7 +20,7 @@
     "test": "node --test test/*.test.mjs"
   },
   "peerDependencies": {
-    "typescript": ">=5.0.0"
+    "typescript": ">=5.0.0 <7"
   },
   "engines": {
     "node": ">=18.18"

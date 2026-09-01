@@ -23,8 +23,13 @@ consumes it:
 ## Install
 
 ```bash
-npm install --save-dev contract-fidelity   # typescript is a peer dependency
+npm install --save-dev contract-fidelity
 ```
+
+`typescript` is a peer dependency, supported range **>=5.0 <7**. TypeScript 7
+is the Go port: its export map points `.` at `lib/version.cjs` and moves the
+compiler API behind `./unstable/*`, so the analysis — which uses
+`ts.createProgram` and the type checker — does not run on it yet.
 
 ```json
 // contract-fidelity.config.json

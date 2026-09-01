@@ -10,7 +10,12 @@ jobs:
       matrix:
         # The analysis is compiler-API code; a TypeScript bump can change what
         # the checker reports, so the supported range is tested, not assumed.
-        typescript: ["5.5", "5.9", "latest"]
+        # NOT "latest": TypeScript 7 is the Go port, whose export map points
+        # "." at lib/version.cjs and moves the compiler API behind ./unstable/*.
+        # This analysis uses ts.createProgram and the checker, so the supported
+        # range is 5.x-6.x. CI names the versions rather than tracking latest,
+        # so a new major is a deliberate decision instead of a surprise red build.
+        typescript: ["5.5", "5.9", "6.0"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
