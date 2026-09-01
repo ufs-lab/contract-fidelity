@@ -103,7 +103,7 @@ function isArrayLike(type, checker) {
 
 // What `typeof` and `Array.isArray` would say about a value of this type.
 // Recorded so a runtime type test against a guaranteed value can be decided.
-function baseKindOf(type, checker) {
+export function baseKindOf(type, checker) {
   if (isArrayLike(type, checker)) return "array";
   const parts = type.isUnion() ? type.types : [type];
   const nonNullish = parts.filter(

@@ -22,6 +22,7 @@
 // and a type parameter states nothing until it is instantiated.
 
 import ts from "typescript";
+import { baseKindOf } from "./contract.mjs";
 
 const NULLISH = ts.TypeFlags.Null | ts.TypeFlags.Undefined | ts.TypeFlags.Void;
 
@@ -126,7 +127,11 @@ export function constraintFromType(type, checker, label) {
       why: "every value here is present and non-null",
       source: "",
       field: label,
-      baseKind: checker.typeToString(checker.getNonNullableType(type)),
+      // The KIND, not the printed type. Setting this to a type string made
+      // every `typeof` and `Array.isArray` verdict garbage: `Array.isArray`
+      // on a mapped array was decided "always-false", because the string
+      // "unknown[]" is not the word "array".
+      baseKind: baseKindOf(type, checker),
       isObjectLike: (type.flags & ts.TypeFlags.Object) !== 0,
     };
   }
