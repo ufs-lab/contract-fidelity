@@ -257,3 +257,40 @@ test("a field written only by a test is not proven", () => {
     false,
   );
 });
+
+// The write census, exercised on the gaps a real codebase exposed. Each of
+// these was a finding against correct code until the census learned it.
+test("the census is keyed by declaration, not by symbol instance", () => {
+  // Box<Row> written with and without `label` through two instantiations;
+  // Opts.mode omitted through Partial<Opts>. Under per-instance keying each
+  // instantiation kept its own census and the omission never reached the
+  // declared field.
+  const rows = JSON.parse(run(["widening", "--json"]));
+  assert.equal(rows.some((r) => r.declared.includes("label?: string")), false);
+  assert.equal(rows.some((r) => r.declared.includes("mode?: string")), false);
+});
+
+test("a null literal written into a field disqualifies it", () => {
+  const rows = JSON.parse(run(["widening", "--json"]));
+  assert.equal(rows.some((r) => r.declared.includes("held: Row | null")), false);
+});
+
+test("a discriminated union arm is never narrowed", () => {
+  const rows = JSON.parse(run(["widening", "--json"]));
+  assert.equal(rows.some((r) => r.declared.includes("error: Error")), false);
+});
+
+test("a shape that is cast into holds values the census never saw", () => {
+  // `JSON.parse(raw) as Stored`: the one write the census sees is not the
+  // only source of values, so nothing about Stored is provable.
+  const rows = JSON.parse(run(["widening", "--json"]));
+  assert.equal(rows.some((r) => r.declared.includes("name?: string")), false);
+  // And the same exclusion reaches dead-code, which used to skip it.
+  const dead = JSON.parse(run(["dead-code", "--json"]));
+  assert.equal(dead.some((r) => r.guard.includes("s.name")), false);
+  // Including a cast onto an inline shape with no name to exclude.
+  assert.equal(
+    dead.some((r) => r.guard.includes("shaped.examples")),
+    false,
+  );
+});

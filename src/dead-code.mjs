@@ -43,6 +43,7 @@ import {
 import {
   buildFieldWriteIndex,
   constrainedFields,
+  typesProducedOutsideLiterals,
   verdictAcrossWrites,
 } from "./fields.mjs";
 import {
@@ -299,7 +300,17 @@ function collectAcrossFields(program, checker, isScanned, rootDir, findings) {
     (sf) => isScannedPath(sf.fileName, rootDir),
     rootDir,
   );
-  const fields = constrainedFields(index, checker, rootDir);
+  // The same exclusion `widening` applies: a shape that is cast, parsed or
+  // awaited holds values this census never saw, so it proves nothing. This
+  // scanner was calling constrainedFields WITHOUT it, which is how a guard on
+  // a localStorage settings field - `parsed.enabledIndicators ?? []`, whose
+  // whole job is legacy records - came to be reported as always-true.
+  const producedElsewhere = typesProducedOutsideLiterals(
+    program,
+    checker,
+    (sf) => isScannedPath(sf.fileName, rootDir),
+  );
+  const fields = constrainedFields(index, checker, rootDir, producedElsewhere);
   if (fields.size === 0) return;
 
   for (const sf of program.getSourceFiles()) {
