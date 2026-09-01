@@ -19,6 +19,7 @@
 // entirely.
 
 import ts from "typescript";
+import { isScannedPath } from "./program.mjs";
 import { constraintOfExpression } from "./census.mjs";
 import { dropsGuarantee } from "./analyze.mjs";
 
@@ -65,7 +66,7 @@ function fieldWidens(target, checker, constraint) {
 function isOwnedField(target, rootDir) {
   const file = target.declarations?.[0]?.getSourceFile();
   if (!file) return false;
-  return file.fileName.includes(`${rootDir}/src/`) && !file.isDeclarationFile;
+  return isScannedPath(file.fileName, rootDir) && !file.isDeclarationFile;
 }
 
 // Types whose values can arrive from somewhere the write census cannot see.

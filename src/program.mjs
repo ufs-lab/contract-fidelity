@@ -1,8 +1,9 @@
-// narrowing-loss: the shared TypeScript program.
+// contract-fidelity: the shared TypeScript program and file-scope rules.
 //
-// Both scanners in this directory need the same thing — a real type checker
-// over `src`, with the generated clients resolved — and building it twice in
-// one file was the only duplication worth extracting.
+// Both scanners need the same two things: a real type checker with the
+// generated clients resolved, and one answer to "is this file in scope".
+// The scope rule lives here because two copies of it can disagree, and a
+// scanner that disagrees the wrong way reports nothing and looks clean.
 
 import ts from "typescript";
 import { dirname, join } from "node:path";
@@ -37,13 +38,35 @@ export function contractPathRe() {
 export const TEST_FILE_RE = /(?:^|[/.])[^/]+\.(?:test|spec)\.[cm]?[tj]sx?$/;
 
 export function isTestFile(fileName) {
-  return TEST_FILE_RE.test(fileName) || fileName.includes("/src/test/");
+  if (TEST_FILE_RE.test(fileName)) return true;
+  // A `test` directory inside a scan root, for helpers that carry no
+  // `.test.` in the name. Derived from the configured roots: hardcoding
+  // `src` here made the rule silently wrong for every other layout.
+  return getConfig().scanRoots.some((root) =>
+    fileName.includes(`/${root}/test/`),
+  );
 }
 
-export function inSrc(fileName) {
+// Is this file one the project asked us to scan?
+//
+// `scanRoots` defaults to ["src"], and every scanner MUST ask this rather
+// than test for `src` itself. A scanner that hardcodes the directory finds
+// nothing in a project laid out differently, and reports that emptiness as
+// a pass. That is the exact vacuous success the design exists to prevent.
+//
+// `rootDir` is the project root. It is passed rather than read from
+// REPO_ROOT so tests can analyse a fixture tree.
+export function isScannedPath(fileName, rootDir = REPO_ROOT) {
   return getConfig().scanRoots.some((root) =>
-    fileName.includes(`${REPO_ROOT}/${root}/`),
+    fileName.includes(`${rootDir}/${root}/`),
   );
+}
+
+// A source file in scope: scanned root, real source, not a test.
+export function isScannedFile(sourceFile, rootDir = REPO_ROOT) {
+  if (sourceFile.isDeclarationFile) return false;
+  const name = sourceFile.fileName;
+  return isScannedPath(name, rootDir) && !isTestFile(name);
 }
 
 export function createProgram() {

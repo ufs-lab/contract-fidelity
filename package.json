@@ -1,6 +1,6 @@
 {
   "name": "contract-fidelity",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Find defensive code written against guarantees your API contract already gives, and the type widening that made it look necessary.",
   "type": "module",
   "license": "MIT",
