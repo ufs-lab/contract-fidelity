@@ -3,7 +3,7 @@
 // This file is the OWNER of what "narrow" means and of every
 // always-true / always-false decision the linter makes. It is pure — no
 // TypeScript compiler, no filesystem — so the decision table is unit
-// testable in isolation. See tools/narrowing-loss/README.md.
+// testable in isolation. See the README.
 //
 // The linter only exists for constraints TypeScript CANNOT represent.
 // Where the type system already knows a check is redundant,
@@ -155,6 +155,73 @@ const NUMERIC_DOC_PATTERNS = [
   },
 ];
 
+// Project-supplied patterns, from `docPatterns` in the config. A generator
+// this tool has never seen writes its guarantees differently, and the built-in
+// list above is tuned to openapi-generator prose. Each spec is
+// `{ id?, source, flags?, kind }`, where `kind` is one of the ids below.
+//
+// A `range` pattern MUST capture two numbers, because that is where the
+// bounds come from. A pattern that does not is rejected at load: a silently
+// broken interval would decide comparisons against garbage, and this tool
+// deletes code on the strength of these decisions.
+const KIND_INTERVALS = {
+  positive: {
+    interval: () => interval(0, Infinity, { loExclusive: true }),
+    why: "the contract guarantees a strictly positive value",
+    captures: 0,
+  },
+  "non-negative": {
+    interval: () => interval(0, Infinity),
+    why: "the contract guarantees a non-negative value",
+    captures: 0,
+  },
+  range: {
+    interval: (m) => interval(Number(m[1]), Number(m[2])),
+    why: "the contract pins the value to a closed range",
+    captures: 2,
+  },
+};
+
+export function compileDocPatterns(specs) {
+  if (!Array.isArray(specs)) {
+    throw new Error("contract-fidelity: `docPatterns` must be an array");
+  }
+  return specs.map((spec, i) => {
+    const at = `docPatterns[${i}]`;
+    if (!spec || typeof spec.source !== "string") {
+      throw new Error(`contract-fidelity: ${at} needs a string \`source\``);
+    }
+    const kind = KIND_INTERVALS[spec.kind];
+    if (!kind) {
+      throw new Error(
+        `contract-fidelity: ${at} has unknown kind ${JSON.stringify(spec.kind)}: ` +
+          `use one of ${Object.keys(KIND_INTERVALS).join(", ")}`,
+      );
+    }
+    let re;
+    try {
+      re = new RegExp(spec.source, spec.flags ?? "");
+    } catch (err) {
+      throw new Error(`contract-fidelity: ${at} is not a valid regex: ${err.message}`);
+    }
+    // `new RegExp("x").exec` yields one element per group plus the match,
+    // so count groups by matching the empty alternation trick.
+    const groups = new RegExp(`${re.source}|`).exec("").length - 1;
+    if (groups < kind.captures) {
+      throw new Error(
+        `contract-fidelity: ${at} declares kind ${spec.kind} but captures ` +
+          `${groups} group(s); ${kind.captures} are required for its bounds`,
+      );
+    }
+    return {
+      id: spec.id ?? spec.kind,
+      re,
+      interval: kind.interval,
+      why: kind.why,
+    };
+  });
+}
+
 // A doc sentence that states a guarantee about the field's own value, as
 // opposed to prose that merely MENTIONS a number. Anything matching a
 // hedge is discarded: a conditional guarantee is not a guarantee.
@@ -182,7 +249,10 @@ const NON_EMPTY_DEFINITION_RE =
 
 // Extract the constraint a doc comment states about the field it documents.
 // Returns null when the doc says nothing decidable.
-export function constraintFromDoc(doc, { isArray = false } = {}) {
+export function constraintFromDoc(
+  doc,
+  { isArray = false, extraPatterns = [] } = {},
+) {
   if (typeof doc !== "string" || doc.length === 0) return null;
 
   // Sentence-level so a hedge in one clause cannot void a guarantee stated
@@ -199,6 +269,7 @@ export function constraintFromDoc(doc, { isArray = false } = {}) {
     ) {
       return {
         kind: "non-empty-array",
+        numeric: false,
         interval: interval(1, Infinity),
         why: "the contract guarantees a non-empty collection",
         source: sentence.trim(),
@@ -206,11 +277,17 @@ export function constraintFromDoc(doc, { isArray = false } = {}) {
     }
     if (isArray) continue;
 
-    for (const pattern of NUMERIC_DOC_PATTERNS) {
+    // Project patterns first: a codebase that configures one has said its
+    // prose is the more specific description of its own generator.
+    for (const pattern of [...extraPatterns, ...NUMERIC_DOC_PATTERNS]) {
       const m = pattern.re.exec(sentence);
       if (m) {
         return {
+          // `numeric` rather than a list of known ids: a project pattern may
+          // name its kind anything, and the caller must still refuse to apply
+          // a numeric guarantee to a field that is not a number.
           kind: pattern.id,
+          numeric: true,
           interval: pattern.interval(m),
           why: pattern.why,
           source: sentence.trim(),

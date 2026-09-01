@@ -6,13 +6,22 @@
 // contract states, or null when the contract states nothing decidable.
 
 import ts from "typescript";
-import { constraintFromDoc } from "./constraints.mjs";
+import { constraintFromDoc, compileDocPatterns } from "./constraints.mjs";
 
 // pnpm resolves the clients through the content-addressed store, so the
 // package name appears mid-path (`node_modules/.pnpm/@acme+...`) and a prefix
 // test would miss every one of them. The scopes themselves are configured —
 // see config.mjs.
-import { contractPathRe } from "./program.mjs";
+import { contractPathRe, getConfig } from "./program.mjs";
+
+// Compiled once. `docPatterns` is the extension point for a generator whose
+// prose the built-in patterns do not recognise; an invalid entry throws here
+// rather than silently contributing nothing.
+let cachedDocPatterns = null;
+function projectDocPatterns() {
+  cachedDocPatterns ??= compileDocPatterns(getConfig().docPatterns);
+  return cachedDocPatterns;
+}
 
 export function isClientDeclaration(decl) {
   const file = decl?.getSourceFile?.();
@@ -136,16 +145,11 @@ export function constraintForClientProperty(symbol, checker, atNode) {
   // classification and declared a string field to be a number in [10, 20].
   // Gating on the field's own type kills the class: a description is evidence
   // about the value only where it agrees with the type.
-  const NUMERIC_KINDS = new Set([
-    "positive",
-    "non-negative",
-    "range",
-    "range-between",
-  ]);
   const fromDoc = constraintFromDoc(doc, {
     isArray: isArrayLike(type, checker),
+    extraPatterns: projectDocPatterns(),
   });
-  if (fromDoc && (!NUMERIC_KINDS.has(fromDoc.kind) || baseKind === "number")) {
+  if (fromDoc && (!fromDoc.numeric || baseKind === "number")) {
     return { ...fromDoc, field: symbol.getName(), baseKind };
   }
 
@@ -176,12 +180,19 @@ export function constraintForClientProperty(symbol, checker, atNode) {
 }
 
 // Human-readable "which contract said so", e.g. `AccountCodeCreateInput.site_id`.
+//
+// Classes count, not just interfaces: `isDataContractMember` accepts the
+// typescript-node template deliberately, so naming only interfaces here
+// printed `(anonymous).field` for every model in those SDKs and made the
+// finding unsearchable.
 export function contractPathFor(symbol) {
   const decl = symbol.declarations?.[0];
   const owner = decl?.parent;
-  const ownerName =
-    owner && ts.isInterfaceDeclaration(owner) ? owner.name.text : "(anonymous)";
-  return `${ownerName}.${symbol.getName()}`;
+  const named =
+    owner &&
+    (ts.isInterfaceDeclaration(owner) || ts.isClassDeclaration(owner)) &&
+    owner.name;
+  return `${named ? owner.name.text : "(anonymous)"}.${symbol.getName()}`;
 }
 
 // How many guarantees the contract actually yields. A scan that finds contract

@@ -36,6 +36,11 @@ async function writeBaseline(baselineFile, counts) {
 // `collect` returns a Map<file, violation[]>; `print` renders a subset of it.
 export function createRatchet({
   id,
+  // The CLI sub-command this ratchet backs. Every hint printed to a user must
+  // name a command they can actually run: the messages here once told them to
+  // read a file and run a script that existed only in the repo this tool was
+  // extracted from.
+  command,
   repoRoot,
   baselineFile,
   collect,
@@ -76,7 +81,7 @@ export function createRatchet({
         process.stderr.write(`  ${r.file}: ${r.count} > ${context}\n`);
       }
       process.stderr.write(
-        `\n${fixHint}\nDo NOT raise the baseline. See tools/narrowing-loss/README.md.\n`,
+        `\n${fixHint}\nDo NOT raise the baseline: it only ever ratchets down.\n`,
       );
       return 1;
     }
@@ -85,7 +90,8 @@ export function createRatchet({
     if (improved.length > 0) {
       process.stdout.write(
         `${id}: clean (${total} baselined violation(s) remain; ` +
-          `${improved.length} file(s) improved — run \`pnpm run lint:${id}:update-baseline\` to ratchet down)\n`,
+          `${improved.length} file(s) improved, run ` +
+          `\`contract-fidelity ${command} --update-baseline\` to ratchet down)\n`,
       );
     } else {
       process.stdout.write(

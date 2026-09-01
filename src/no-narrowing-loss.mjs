@@ -15,7 +15,7 @@
 // the boundary were untrusted when it is not.
 //
 // This file is the OWNER of the policy. Update README.md alongside any
-// change here. See tools/narrowing-loss/README.md.
+// change here. See the README.
 
 import ts from "typescript";
 import { join, relative } from "node:path";
@@ -25,7 +25,8 @@ import {
   getConfig,
   contractPathRe,
   REPO_ROOT,
-  TEST_FILE_RE,
+  isScannedFile,
+  isScannedPath,
 } from "./program.mjs";
 import { createRatchet } from "./ratchet.mjs";
 
@@ -58,17 +59,6 @@ import {
 // project's tree and is committed alongside the code it describes.
 const baselineFile = () =>
   join(REPO_ROOT, getConfig().baselineDir, "narrowing-loss-baseline.json");
-
-function makeIsScannedFile(rootDir) {
-  return (sourceFile) => {
-    if (sourceFile.isDeclarationFile) return false;
-    const name = sourceFile.fileName;
-    if (!name.includes(`${rootDir}/src/`)) return false;
-    if (TEST_FILE_RE.test(name)) return false;
-    if (name.includes("/src/test/")) return false;
-    return true;
-  };
-}
 
 // Every property read in `sf` that resolves to a constrained client field.
 function findOrigins(sf, checker) {
@@ -306,7 +296,7 @@ function collectAcrossFields(program, checker, isScanned, rootDir, findings) {
   const index = buildFieldWriteIndex(
     program,
     checker,
-    (sf) => sf.fileName.includes(`${rootDir}/src/`),
+    (sf) => isScannedPath(sf.fileName, rootDir),
     rootDir,
   );
   const fields = constrainedFields(index, checker, rootDir);
@@ -375,12 +365,12 @@ export function analyzeProgram(
   checker,
   { rootDir, excludeBoundaryChecks = false },
 ) {
-  const isScanned = makeIsScannedFile(rootDir);
+  const isScanned = (sourceFile) => isScannedFile(sourceFile, rootDir);
   const findings = [];
 
   // The census spans test files too — see census.mjs.
   const census = buildCallCensus(program, checker, (sf) =>
-    sf.fileName.includes(`${rootDir}/src/`),
+    isScannedPath(sf.fileName, rootDir),
   );
 
   for (const sf of program.getSourceFiles()) {
@@ -464,9 +454,17 @@ function contracts() {
   for (const sf of program.getSourceFiles()) {
     if (!contractPathRe().test(sf.fileName)) continue;
     ts.forEachChild(sf, (node) => {
-      if (!ts.isInterfaceDeclaration(node)) return;
+      // Interfaces (typescript-axios) and classes (typescript-node). Auditing
+      // only interfaces made this command blind to exactly the generators the
+      // analysis goes out of its way to support, and an empty audit reads as
+      // "no guarantees here" rather than "this command cannot see them".
+      const isModel =
+        ts.isInterfaceDeclaration(node) || ts.isClassDeclaration(node);
+      if (!isModel || !node.name) return;
       for (const member of node.members) {
-        if (!ts.isPropertySignature(member) || !member.name) continue;
+        const isProperty =
+          ts.isPropertySignature(member) || ts.isPropertyDeclaration(member);
+        if (!isProperty || !member.name) continue;
         const symbol = checker.getSymbolAtLocation(member.name);
         if (!symbol) continue;
         const c = constraintForClientProperty(symbol, checker, member.name);
@@ -498,6 +496,7 @@ function contracts() {
 
 const ratchet = createRatchet({
   id: "narrowing-loss",
+  command: "dead-code",
   repoRoot: REPO_ROOT,
   baselineFile,
   collect: collectViolations,

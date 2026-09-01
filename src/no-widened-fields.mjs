@@ -25,7 +25,7 @@
 // models as "a mapping, not a mirror", which is precisely where these live.
 //
 // This file is the OWNER of the policy. Update README.md alongside any
-// change here. See tools/narrowing-loss/README.md.
+// change here. See the README.
 
 import ts from "typescript";
 import { join, relative } from "node:path";
@@ -35,7 +35,8 @@ import {
   getConfig,
   REPO_ROOT,
   isTestFile,
-  inSrc,
+  isScannedPath,
+  isScannedFile,
 } from "./program.mjs";
 import { createRatchet } from "./ratchet.mjs";
 import {
@@ -114,13 +115,13 @@ export function collectViolations() {
   const index = buildFieldWriteIndex(
     program,
     checker,
-    (sf) => inSrc(sf.fileName),
+    (sf) => isScannedPath(sf.fileName),
     REPO_ROOT,
   );
   const producedElsewhere = typesProducedOutsideLiterals(
     program,
     checker,
-    (sf) => inSrc(sf.fileName),
+    (sf) => isScannedPath(sf.fileName),
   );
   const fields = constrainedFields(
     index,
@@ -166,8 +167,7 @@ export function collectViolations() {
 
   // Locals, return types and casts: the same loss, declared somewhere other
   // than a field.
-  const isScanned = (sf) =>
-    !sf.isDeclarationFile && inSrc(sf.fileName) && !isTestFile(sf.fileName);
+  const isScanned = (sf) => isScannedFile(sf);
   for (const d of findWidenedDeclarations(program, checker, isScanned)) {
     const sf = d.node.getSourceFile();
     const file = relative(REPO_ROOT, sf.fileName);
@@ -214,6 +214,7 @@ function printViolations(byFile, files) {
 
 const ratchet = createRatchet({
   id: "widened-fields",
+  command: "widening",
   repoRoot: REPO_ROOT,
   baselineFile,
   collect: collectViolations,
