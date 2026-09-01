@@ -229,3 +229,31 @@ test("an inferred constraint carries a base KIND, not a printed type", () => {
     }
   }
 });
+
+test("omitting an optional field counts as a write of absent", () => {
+  // Without this the census sees only the literals that supply the field and
+  // never the ones that leave it out, so a field written in three places and
+  // omitted in thirty reads as always-present. On a real codebase that was
+  // about three quarters of every finding.
+  const rows = JSON.parse(run(["widening", "--json"]));
+  assert.equal(
+    rows.some((r) => r.declared.includes("omittedSometimes")),
+    false,
+  );
+  // The control: a field nothing omits is still reported.
+  assert.equal(
+    rows.some((r) => r.declared.includes("label")),
+    true,
+  );
+});
+
+test("a field written only by a test is not proven", () => {
+  // A test supplies whatever the test needs. It proves a branch is reachable,
+  // which is why the census reads tests at all, and it proves nothing about
+  // what production always supplies.
+  const rows = JSON.parse(run(["widening", "--json"]));
+  assert.equal(
+    rows.some((r) => r.declared.includes("seededByTestOnly")),
+    false,
+  );
+});
