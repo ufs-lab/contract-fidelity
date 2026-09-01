@@ -208,3 +208,24 @@ test("inferConstraints false leaves only the contract-anchored findings", () => 
   assert.ok(rows.length > 0);
   for (const row of rows) assert.equal(row.origin, "contract");
 });
+
+test("an inferred constraint carries a base KIND, not a printed type", () => {
+  // Setting `baseKind` to `checker.typeToString(...)` made every typeof and
+  // Array.isArray verdict garbage: `Array.isArray` on a mapped array was
+  // decided "always-false", because the string "unknown[]" is not the word
+  // "array". Anything that reaches classifyGuard must be a kind.
+  const rows = JSON.parse(run(["widening", "--json"]));
+  assert.ok(rows.length > 0);
+
+  const dead = JSON.parse(run(["dead-code", "--json"]));
+  for (const row of dead) {
+    if (row.shape === "is-array-test" || row.shape === "typeof-test") {
+      assert.ok(
+        ["array", "object", "string", "number", "boolean"].includes(
+          row.baseKind ?? "array",
+        ),
+        `unexpected baseKind on ${row.guard}`,
+      );
+    }
+  }
+});
