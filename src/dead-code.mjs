@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-// narrowing-loss — no defensive code against a guarantee the contract
+// dead-code: no defensive code against a guarantee the contract
 // already gives.
 //
 // A value arrives from a generated client carrying a
@@ -9,7 +9,7 @@
 // union, a required non-null field, a documented non-empty array. It is then
 // passed through a signature that drops the guarantee (`amount: number`,
 // `scope: string`, `x: T | null`) and defended downstream against a value it
-// can never hold — `if (amount > 0)`, an unreachable `default:`, `?? "…"`.
+// can never hold - `if (amount > 0)`, an unreachable `default:`, `?? "…"`.
 //
 // The dead branch is untestable, hides the real contract, and reads as if
 // the boundary were untrusted when it is not.
@@ -58,7 +58,7 @@ import {
 // The backlog belongs to the project being analysed, so it lives in that
 // project's tree and is committed alongside the code it describes.
 const baselineFile = () =>
-  join(REPO_ROOT, getConfig().baselineDir, "narrowing-loss-baseline.json");
+  join(REPO_ROOT, getConfig().baselineDir, "dead-code-baseline.json");
 
 // Every property read in `sf` that resolves to a constrained client field.
 function findOrigins(sf, checker) {
@@ -348,7 +348,7 @@ function collectAcrossFields(program, checker, isScanned, rootDir, findings) {
 // These were once out of scope on the argument that the TypeScript type is a
 // compile-time fiction over an HTTP response, so verifying it at the edge is
 // defensible. That is NOT this codebase's policy: the contract is trusted,
-// and re-deriving at runtime what it already states is a bug — it forks the
+// and re-deriving at runtime what it already states is a bug - it forks the
 // code on a branch that cannot execute, and hides which value is really
 // authoritative. So they are reported like any other finding.
 //
@@ -368,7 +368,7 @@ export function analyzeProgram(
   const isScanned = (sourceFile) => isScannedFile(sourceFile, rootDir);
   const findings = [];
 
-  // The census spans test files too — see census.mjs.
+  // The census spans test files too - see census.mjs.
   const census = buildCallCensus(program, checker, (sf) =>
     isScannedPath(sf.fileName, rootDir),
   );
@@ -389,12 +389,12 @@ export function collectViolations({ excludeBoundaryChecks = false } = {}) {
   const checker = program.getTypeChecker();
 
   // Refuse to report "clean" while checking nothing. Contract files can exist
-  // and still yield no guarantees — a generator template whose every property
+  // and still yield no guarantees - a generator template whose every property
   // is optional gives this rule nothing to enforce, and a silent pass would
   // read as a verified one.
   if (countContractGuarantees(program, checker) === 0) {
     throw new Error(
-      "contract files were found but state no guarantees this rule can use — " +
+      "contract files were found but state no guarantees this rule can use - " +
         "every property is optional, or the generator template is not recognised. " +
         "A pass here would be vacuous, so it is an error instead.",
     );
@@ -425,7 +425,7 @@ function printViolations(byFile, files) {
         f.verdict === "always-true" ? "always true" : "always false";
       process.stderr.write(`    ${f.line}: \`${f.guard}\` is ${verdict}\n`);
       process.stderr.write(
-        `      contract: ${f.contract} — ${f.why}${f.evidence ? `\n      doc: "${f.evidence}"` : ""}\n`,
+        `      contract: ${f.contract} - ${f.why}${f.evidence ? `\n      doc: "${f.evidence}"` : ""}\n`,
       );
       for (const o of f.origins) {
         process.stderr.write(
@@ -444,7 +444,7 @@ function printViolations(byFile, files) {
 
 // Dump every doc-stated and enum constraint the linter believes it has found
 // in the clients. The doc patterns are prose heuristics, so being able to
-// audit the whole index in one pass is what keeps them honest — a loose
+// audit the whole index in one pass is what keeps them honest - a loose
 // pattern shows up here as a field whose "guarantee" reads like a
 // conditional.
 function contracts() {
@@ -494,9 +494,16 @@ function contracts() {
   return 0;
 }
 
+// What identifies this finding across edits: the guard text, the contract it
+// disagrees with, and the kind of guarantee. Not the line, which moves.
+function fingerprintOf(finding) {
+  return `${finding.guard} :: ${finding.contract} :: ${finding.constraintKind}`;
+}
+
 const ratchet = createRatchet({
-  id: "narrowing-loss",
+  id: "dead-code",
   command: "dead-code",
+  fingerprintOf,
   repoRoot: REPO_ROOT,
   baselineFile,
   collect: collectViolations,

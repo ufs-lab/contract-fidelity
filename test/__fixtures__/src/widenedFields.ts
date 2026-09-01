@@ -1,6 +1,6 @@
 import type { Movement } from "../clients/@acme/fake-client/api";
 
-// Widened, but never guarded anywhere: invisible to `no-narrowing-loss`, and
+// Widened, but never guarded anywhere: invisible to `dead-code`, and
 // the reason the sibling check exists.
 interface WidenedVM {
   optionalName?: string;
@@ -37,7 +37,7 @@ export function buildMixedFromAnywhere(value: string | undefined): MixedVM {
 
 // `amount` carries "must be > 0", which TypeScript cannot express either way.
 // Reporting this would demand an edit that does not exist; the guarantee is
-// enforced by no-narrowing-loss, which needs a dead guard to prove harm.
+// enforced by dead-code, which needs a dead guard to prove harm.
 interface AmountVM {
   amount: number;
 }
@@ -69,7 +69,7 @@ export function buildWire(
 // --- a guarantee copied through an intermediate view model -----------------
 
 // StageOne mirrors the contract faithfully. StageTwo then widens the SAME
-// value, but its write reads StageOne, not a client property — so a
+// value, but its write reads StageOne, not a client property - so a
 // single-pass census resolves nothing and skips it in silence. This is the
 // shape CurrencyExposureAccountDetailVM had, found only when narrowing its
 // source broke the typecheck.

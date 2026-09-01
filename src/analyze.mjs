@@ -1,4 +1,4 @@
-// narrowing-loss: origin -> widening -> dead guard.
+// contract-fidelity: origin -> widening -> dead guard.
 //
 // A finding is a PAIR, never a lone widening: the contract guarantee that
 // entered from a generated client, the signature that dropped it, and the
@@ -8,6 +8,7 @@
 // tool owns only the gap between them.
 
 import ts from "typescript";
+import { onlyNullishWasAdded } from "./inferred.mjs";
 import {
   decideNumericComparison,
   flipOperator,
@@ -189,7 +190,7 @@ function classifyLengthGuard(ref, parent, constraint) {
     };
   }
 
-  // `if (!rows.length)` — a zero-length test spelled as a falsy test.
+  // `if (!rows.length)` - a zero-length test spelled as a falsy test.
   if (
     grand &&
     ts.isPrefixUnaryExpression(grand) &&
@@ -255,7 +256,7 @@ function classifyRuntimeTypeGuard(ref, parent, constraint) {
 }
 
 function classifyNullishGuard(ref, parent, constraint) {
-  // `x ?? fallback` — only when the tracked value is the LEFT side.
+  // `x ?? fallback` - only when the tracked value is the LEFT side.
   if (
     ts.isBinaryExpression(parent) &&
     parent.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken &&
@@ -289,7 +290,7 @@ function classifyNullishGuard(ref, parent, constraint) {
     }
   }
 
-  // `x?.foo` — optional chaining on a value that is never nullish.
+  // `x?.foo` - optional chaining on a value that is never nullish.
   if (
     (ts.isPropertyAccessExpression(parent) ||
       ts.isElementAccessExpression(parent) ||
@@ -408,9 +409,9 @@ function referencesTo(symbol, scope, checker) {
 // with the client's own enum type has NOT widened; one annotated `string`
 // has. For doc-stated numeric guarantees the TypeScript type is `number`
 // either way, so the guarantee is lost the moment the value leaves the
-// property access — that IS the widening this tool is named for.
+// property access - that IS the widening this tool is named for.
 // A nullable, `unknown`, `any`, or `unknown[]` annotation has dropped what
-// the contract promised — the three shapes that make a runtime re-check look
+// the contract promised - the three shapes that make a runtime re-check look
 // necessary when it is not.
 function dropsGuarantee(type, checker) {
   const parts = type.isUnion() ? type.types : [type];
@@ -442,7 +443,7 @@ function dropsGuarantee(type, checker) {
 //   function isObject(value: unknown): value is Record<string, unknown>
 //   function requireStringIdentifier(value: unknown, field: string): string
 //
-// Widening is the accidental loss of a specific type — `EntityScope` becoming
+// Widening is the accidental loss of a specific type - `EntityScope` becoming
 // `string`, `T` becoming `T | null`. Declaring `unknown` is deliberate: the
 // author is taking responsibility for checking, and the checks inside are the
 // point of the function, not dead weight. Both shapes below say "validator":
@@ -451,18 +452,30 @@ function dropsGuarantee(type, checker) {
 //
 // Kept narrow on purpose: `accounts: unknown[] | undefined` is NOT a bare
 // `unknown`, and a function that returns a default rather than throwing is
-// not asserting anything — those stay in scope.
+// not asserting anything - those stay in scope.
 function isValidatorBoundary(paramDecl, checker) {
   const fn = paramDecl.parent;
 
   if (fn.type && ts.isTypePredicateNode(fn.type)) return true;
+
+  // `function assertRequired(value: T | undefined): T { if (!value) throw }`
+  // is a validator by every meaning of the word, and its parameter type is
+  // the whole point of it. Measured against a real codebase this was the
+  // worst false positive the parameter carrier produced: 21 call sites, all
+  // passing present values, and narrowing the parameter would delete the
+  // function's reason to exist. A function that THROWS on the absent case is
+  // asserting, whatever it spells its parameter.
+  const asserts = fn.type && ts.isTypePredicateNode(fn.type);
+  if (asserts) return true;
 
   if (!paramDecl.type) return false;
   const declared = paramDecl.type.kind;
   const isBareUnknown =
     declared === ts.SyntaxKind.UnknownKeyword ||
     declared === ts.SyntaxKind.AnyKeyword;
-  if (!isBareUnknown) return false;
+  const declaredType = checker.getTypeAtLocation(paramDecl.type);
+  const acceptsAbsent = dropsGuarantee(declaredType, checker);
+  if (!isBareUnknown && !acceptsAbsent) return false;
 
   let throws = false;
   const scan = (node) => {
@@ -497,7 +510,13 @@ function widensAwayFrom(paramDecl, constraint, checker) {
   if (constraint.kind === "required-non-null") {
     if (!paramDecl.type) return false;
     const t = checker.getTypeAtLocation(paramDecl.type);
-    return dropsGuarantee(t, checker);
+    if (!dropsGuarantee(t, checker)) return false;
+    // See typeDropsConstraint: an inferred guarantee only licenses the
+    // mechanical case, where nullish is the whole of the difference.
+    if (constraint.origin === "inferred") {
+      return onlyNullishWasAdded(t, constraint, checker);
+    }
+    return true;
   }
   // Numeric / non-empty-array guarantees live only in the doc comment.
   return true;

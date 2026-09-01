@@ -1,6 +1,10 @@
 {
-  "contractPackages": ["@acme"],
-  "scanRoots": ["app"],
+  "contractPackages": [
+    "@acme"
+  ],
+  "scanRoots": [
+    "app"
+  ],
   "tsconfig": "tsconfig.json",
   "trustContract": true
 }

@@ -1,14 +1,14 @@
-// narrowing-loss: the constraint model.
+// contract-fidelity: the constraint model.
 //
 // This file is the OWNER of what "narrow" means and of every
-// always-true / always-false decision the linter makes. It is pure — no
-// TypeScript compiler, no filesystem — so the decision table is unit
+// always-true / always-false decision the linter makes. It is pure - no
+// TypeScript compiler, no filesystem - so the decision table is unit
 // testable in isolation. See the README.
 //
 // The linter only exists for constraints TypeScript CANNOT represent.
 // Where the type system already knows a check is redundant,
 // `@typescript-eslint/no-unnecessary-condition` (already "error" in
-// eslint.config.js) is the answer and this tool must stay silent — two
+// eslint.config.js) is the answer and this tool must stay silent - two
 // diagnostics for one line is worse than one.
 
 // ---------------------------------------------------------------------------
@@ -94,7 +94,7 @@ export function decideNumericComparison(iv, op, k) {
   }
 }
 
-// `x OP k` written the other way round — `0 < amount` rather than
+// `x OP k` written the other way round - `0 < amount` rather than
 // `amount > 0`. Mirrors the operator so the caller can normalise.
 export function flipOperator(op) {
   switch (op) {
@@ -118,7 +118,7 @@ export function flipOperator(op) {
 // The OpenAPI generator drops schema constraints into the description text
 // rather than the TypeScript type, so the doc comment is the only place the
 // narrowness survives. Each pattern below was taken from an actual
-// generated client doc string; keep this list evidence-driven — a
+// generated client doc string; keep this list evidence-driven - a
 // speculative pattern that never fires is dead weight, and a loose one
 // (matching prose about some OTHER field) produces false "dead" verdicts.
 const NUMERIC_DOC_PATTERNS = [
@@ -229,7 +229,7 @@ const HEDGE_RE =
   /\b(?:unless|except|may be|might be|can be|otherwise|if\s+the\b|when\s+the\b|when\s+present\b|if\s+present\b|omitted|absent|optional)\b/i;
 
 // Non-empty collection guarantees. These must PREDICATE non-emptiness of
-// the documented field — "the array is non-empty" — not merely mention it.
+// the documented field - "the array is non-empty" - not merely mention it.
 // `UnmatchedEvent.missing_exports` documents "Non-empty means the event is
 // excluded from matching", which says what a non-empty value would imply and
 // guarantees nothing; a bare /non-empty/ test read that as a guarantee and
@@ -242,7 +242,7 @@ const NON_EMPTY_GUARANTEES = [
   /\bcontains? at least one\b/i,
 ];
 
-// "Non-empty means …", "non-empty indicates …" — the phrase is the subject
+// "Non-empty means …", "non-empty indicates …" - the phrase is the subject
 // of a definition, not a claim about the value in hand.
 const NON_EMPTY_DEFINITION_RE =
   /\bnon-?empty\b[^.;]{0,20}\b(?:means|implies|indicates|signals)\b/i;
