@@ -19,7 +19,7 @@
 // entirely.
 
 import ts from "typescript";
-import { isScannedPath } from "./program.mjs";
+import { isScannedPath, isTestFile } from "./program.mjs";
 import { guaranteeOfExpression } from "./census.mjs";
 import { onlyNullishWasAdded } from "./inferred.mjs";
 import { dropsGuarantee } from "./analyze.mjs";
@@ -183,6 +183,41 @@ export function buildFieldWriteIndex(
       if (ts.isObjectLiteralExpression(node)) {
         const contextual = checker.getContextualType(node);
         if (contextual) {
+          // OMITTING an optional field is a write of "absent".
+          //
+          // Without this the census sees only the literals that supply the
+          // field and never the ones that leave it out, so a field written in
+          // three places and omitted in thirty reads as always-present. On a
+          // real codebase that was about three quarters of every finding:
+          // options bags, result types where the payload is absent on
+          // failure, and optional component props. Several carried the
+          // author's own comment saying so - "omitted when no previous data
+          // available" - one line above the field the tool proposed to
+          // narrow.
+          //
+          // The call census has always applied this rule: an omitted argument
+          // means unproven. This is the same rule, for the same reason.
+          const supplied = new Set(
+            node.properties
+              .map((prop) =>
+                prop.name && (ts.isIdentifier(prop.name) ||
+                  ts.isStringLiteralLike(prop.name))
+                  ? prop.name.text
+                  : null,
+              )
+              .filter((name) => name !== null),
+          );
+          for (const candidate of checker.getPropertiesOfType(contextual)) {
+            const optional =
+              (candidate.flags & ts.SymbolFlags.Optional) !== 0;
+            if (
+              optional &&
+              !supplied.has(candidate.getName()) &&
+              isOwnedField(candidate, rootDir)
+            ) {
+              entry(candidate).disqualified = true;
+            }
+          }
           for (const prop of node.properties) {
             if (ts.isSpreadAssignment(prop)) {
               // Values could arrive from anywhere this object was spread from.
@@ -221,6 +256,34 @@ export function buildFieldWriteIndex(
       }
       if (ts.isJsxSpreadAttribute(node)) {
         disqualifyPropsOf(checker.getTypeAtLocation(node.expression));
+      }
+
+      // `<Component />` without an optional prop is the same omission.
+      //
+      // A prop passed at two call sites and left out at twenty is not a prop
+      // every caller supplies, and every optional component prop in the
+      // sample was reported for exactly this reason.
+      if (ts.isJsxOpeningElement(node) || ts.isJsxSelfClosingElement(node)) {
+        const propsType = checker.getContextualType?.(node.attributes);
+        if (propsType) {
+          const supplied = new Set(
+            node.attributes.properties
+              .filter(ts.isJsxAttribute)
+              .map((attr) =>
+                ts.isIdentifier(attr.name) ? attr.name.text : null,
+              )
+              .filter((name) => name !== null),
+          );
+          for (const candidate of checker.getPropertiesOfType(propsType)) {
+            if (
+              (candidate.flags & ts.SymbolFlags.Optional) !== 0 &&
+              !supplied.has(candidate.getName()) &&
+              isOwnedField(candidate, rootDir)
+            ) {
+              entry(candidate).disqualified = true;
+            }
+          }
+        }
       }
 
       // `obj.field = expr`
@@ -288,6 +351,13 @@ export function constrainedFields(index, checker, rootDir, producedElsewhere) {
     changed = false;
     for (const [target, { writes, disqualified }] of index) {
       if (proven.has(target) || disqualified || writes.length === 0) continue;
+      // A test supplies whatever the test needs. It proves a branch is
+      // REACHABLE, which is why the census reads tests at all, but it cannot
+      // prove that production always supplies a value. Two findings in a
+      // sample of thirty rested on a single write in a `.test.ts`.
+      if (writes.every((expr) => isTestFile(expr.getSourceFile().fileName))) {
+        continue;
+      }
 
       let shared = null;
       let ok = true;

@@ -66,3 +66,23 @@ export function describePublic(id: string | undefined): string {
 export function usePublic(row: Row): string {
   return describePublic(row.id);
 }
+
+// An optional field that some literals OMIT. Absence is part of its design,
+// so no census may prove it always present.
+export interface Options {
+  required: string;
+  omittedSometimes?: string;
+}
+
+export function withField(row: Row): Options {
+  return { required: row.id, omittedSometimes: row.id };
+}
+
+export function withoutField(row: Row): Options {
+  return { required: row.id };
+}
+
+// A field whose only write lives in a test proves nothing about production.
+export interface TestOnly {
+  seededByTestOnly?: string;
+}
