@@ -1,0 +1,210 @@
+// The inferred constraint source, and the limits on it.
+//
+// Every limit here came from running the rule over a real application and
+// reading what it said. The first version produced 1,224 findings, and about
+// half of them were nonsense: narrow this title to the one title I have seen,
+// narrow this object field to `true`, narrow `unknown[]` to `any[]`, narrow
+// `unknown[]` to `unknown[]`. Each test below pins one of the cuts that
+// followed. They are the difference between a rule people keep and one they
+// switch off.
+
+import test from "node:test";
+import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+import {
+  isApplicableSuggestion,
+  narrowedDeclaration,
+  alignSuggestion,
+} from "../src/inferred.mjs";
+
+const HERE = dirname(fileURLToPath(import.meta.url));
+const BIN = join(HERE, "..", "bin", "contract-fidelity.mjs");
+const PROJECT = join(HERE, "__project__");
+
+const CONFIG = join(PROJECT, "contract-fidelity.config.json");
+
+function run(args) {
+  const res = spawnSync(process.execPath, [BIN, ...args], {
+    cwd: PROJECT,
+    encoding: "utf8",
+  });
+  if (res.error) throw res.error;
+  return `${res.stdout}${res.stderr}`;
+}
+
+// Run with one config key overridden, then put the file back.
+function runWithConfig(overrides, args) {
+  const original = readFileSync(CONFIG, "utf8");
+  try {
+    const merged = { ...JSON.parse(original), ...overrides };
+    writeFileSync(CONFIG, `${JSON.stringify(merged, null, 2)}\n`, "utf8");
+    return run(args);
+  } finally {
+    writeFileSync(CONFIG, original, "utf8");
+  }
+}
+
+// ---------------------------------------------------------------------------
+// What counts as a suggestion worth printing
+// ---------------------------------------------------------------------------
+
+test("a suggestion must name a type", () => {
+  assert.equal(isApplicableSuggestion("ColorTheme", "(): string"), true);
+  assert.equal(isApplicableSuggestion("string", "title?: string"), true);
+  assert.equal(isApplicableSuggestion("string[]", "x?: string[]"), true);
+  assert.equal(
+    isApplicableSuggestion("readonly string[]", "x?: readonly string[]"),
+    true,
+  );
+});
+
+test("a structural type is not a suggestion", () => {
+  // Proposing a whole function signature, or an object type spelled out, is a
+  // diagnostic nobody can apply.
+  assert.equal(
+    isApplicableSuggestion("(value: unknown) => Element", "render?: X"),
+    false,
+  );
+  assert.equal(
+    isApplicableSuggestion("{ inputPer1KTokens: number; }", "PRICING: X"),
+    false,
+  );
+  assert.equal(
+    isApplicableSuggestion("[[number, number], [number, number]]", "R: X"),
+    false,
+  );
+});
+
+test("any, unknown and never are never narrowings", () => {
+  assert.equal(isApplicableSuggestion("any[]", "x as unknown[]"), false);
+  assert.equal(isApplicableSuggestion("unknown[]", "(): unknown[]"), false);
+  assert.equal(isApplicableSuggestion("never", "x: string"), false);
+});
+
+test("a generic ARGUMENT may mention any", () => {
+  // `Record<string, unknown>` is a real narrowing of
+  // `Record<string, unknown> | null`, and ag-Grid puts `any` inside its own
+  // default type argument. What disqualifies a suggestion is being any or
+  // unknown itself.
+  assert.equal(
+    isApplicableSuggestion("Record<string, unknown>", "args as R | null"),
+    true,
+  );
+  assert.equal(
+    isApplicableSuggestion("ColDef<TData, any>[]", "columnDefs?: ColDef[]"),
+    true,
+  );
+});
+
+// ---------------------------------------------------------------------------
+// What the suggestion should say
+// ---------------------------------------------------------------------------
+
+test("the suggestion keeps the author's own type name", () => {
+  // Deriving it from the source type proposed swapping one structurally
+  // identical name for another. The finding is about the nullish part, so
+  // that is all it proposes removing.
+  assert.equal(
+    narrowedDeclaration("template: TemplateWithExamples | null | undefined"),
+    "TemplateWithExamples",
+  );
+  assert.equal(narrowedDeclaration("percentage_change?: number | null"), "number");
+  assert.equal(narrowedDeclaration("scale: number"), "number");
+});
+
+test("a suggestion never quietly drops readonly", () => {
+  assert.equal(
+    alignSuggestion("string[]", "options?: readonly string[]"),
+    "readonly string[]",
+  );
+  assert.equal(alignSuggestion("string", "name?: string"), "string");
+});
+
+// ---------------------------------------------------------------------------
+// End to end, on a project with no contract in sight
+// ---------------------------------------------------------------------------
+
+test("a widening with no contract anywhere is reported", () => {
+  const out = run(["widening", "--list"]);
+  assert.match(out, /id: string \| undefined/);
+  assert.match(out, /every value written here is present and non-null/);
+});
+
+test("an inferred finding never claims a contract said so", () => {
+  // A reader who goes looking for a contract that does not exist stops
+  // trusting the tool, and rightly.
+  const rows = JSON.parse(run(["widening", "--json"]));
+  for (const row of rows) {
+    if (row.origin === "inferred") {
+      assert.doesNotMatch(row.why, /contract/);
+    }
+  }
+});
+
+test("a double cast is reported once, not twice", () => {
+  const rows = JSON.parse(run(["widening", "--json"]));
+  const doubles = rows.filter((r) => r.declared.includes("as unknown as"));
+  assert.equal(doubles.length, 1);
+  // And it names the real source, not the `as unknown` hop.
+  assert.equal(doubles[0].writes[0].text, "row.status");
+});
+
+test("a let whose wider type is doing real work is not reported", () => {
+  // `let held: string | undefined = row.id; held = undefined;` needs the
+  // wider type. Only a const proves the declared type is the whole story.
+  const rows = JSON.parse(run(["widening", "--json"]));
+  assert.equal(
+    rows.some((r) => r.declared.includes("held")),
+    false,
+  );
+});
+
+test("a parameter one caller feeds an absent value is not reported", () => {
+  // The soundness rule that makes the census worth having: unanimity or
+  // silence.
+  const rows = JSON.parse(run(["widening", "--json"]));
+  assert.equal(
+    rows.some((r) => r.declared.includes("describeMaybe")),
+    false,
+  );
+  assert.equal(
+    rows.some((r) => r.declared.includes("describeId")),
+    true,
+  );
+});
+
+test("closedWorld false stops proving anything about an export", () => {
+  const withClosed = JSON.parse(run(["widening", "--json"]));
+  assert.equal(
+    withClosed.some((r) => r.declared.includes("describePublic")),
+    true,
+    "an export is provable when the program holds all its callers",
+  );
+
+  // The library setting: an export is called by code this program will never
+  // see, so its census proves nothing.
+  const openWorld = JSON.parse(
+    runWithConfig({ closedWorld: false }, ["widening", "--json"]),
+  );
+  assert.equal(
+    openWorld.some((r) => r.declared.includes("describePublic")),
+    false,
+  );
+  assert.equal(
+    openWorld.some((r) => r.declared.includes("describeId")),
+    true,
+    "a module-local function is provable either way",
+  );
+});
+
+test("inferConstraints false leaves only the contract-anchored findings", () => {
+  const rows = JSON.parse(
+    runWithConfig({ inferConstraints: false }, ["widening", "--json"]),
+  );
+  assert.ok(rows.length > 0);
+  for (const row of rows) assert.equal(row.origin, "contract");
+});

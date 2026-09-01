@@ -1,12 +1,12 @@
-// narrowing-loss: guarantees dropped into a field rather than a parameter.
+// contract-fidelity: guarantees dropped into a field rather than a parameter.
 //
 // The commonest way a contract guarantee goes missing in this codebase is
-// not a function parameter — it is a view model or a props type:
+// not a function parameter - it is a view model or a props type:
 //
 //   interface Row { entityName: string | null }        // wider than the API
 //   const row: Row = { entityName: acc.entity.name };  // contract: required
 //   ...
-//   row.entityName ?? "—"                              // dead
+//   row.entityName ?? "-"                              // dead
 //
 // TypeScript cannot help here: by the time the value is in `row.entityName`
 // its type really is nullable, so `no-unnecessary-condition` is right to stay
@@ -15,28 +15,37 @@
 //
 // The reasoning mirrors census.mjs: a guard on a read is dead only if every
 // write into that field supplies a guaranteed value. A single unaccounted
-// write — a spread, an assignment we cannot resolve — disqualifies the field
+// write - a spread, an assignment we cannot resolve - disqualifies the field
 // entirely.
 
 import ts from "typescript";
 import { isScannedPath } from "./program.mjs";
-import { constraintOfExpression } from "./census.mjs";
+import { guaranteeOfExpression } from "./census.mjs";
+import { onlyNullishWasAdded } from "./inferred.mjs";
 import { dropsGuarantee } from "./analyze.mjs";
 
 // A field whose declared type still carries the guarantee has not widened,
 // and a guard on it is TypeScript's business, not ours.
-// Does `type` fail to carry `constraint`? Shared by every carrier — a field,
-// a local, a return type, a cast — because they all ask the same question:
+// Does `type` fail to carry `constraint`? Shared by every carrier - a field,
+// a local, a return type, a cast - because they all ask the same question:
 // is this declaration wider than the contract value flowing into it?
 export function typeDropsConstraint(type, checker, constraint) {
   if (constraint.kind === "required-non-null") {
-    return dropsGuarantee(type, checker);
+    if (!dropsGuarantee(type, checker)) return false;
+    // A contract states the field is required, and any nullish declaration
+    // contradicts it. An INFERRED guarantee is weaker: it says only that the
+    // values seen so far were present, so the report is confined to the one
+    // shape with a mechanical fix, where nullish is all that was added.
+    if (constraint.origin === "inferred") {
+      return onlyNullishWasAdded(type, constraint, checker);
+    }
+    return true;
   }
   if (constraint.kind === "enum-member") {
     // Widened the moment it is no longer a union of string literals.
     return !(type.isUnion() && type.types.every((p) => p.isStringLiteral()));
   }
-  // Doc-stated guarantees have no narrower TypeScript type to move to — see
+  // Doc-stated guarantees have no narrower TypeScript type to move to - see
   // the note in fieldWidens.
   return false;
 }
@@ -49,13 +58,13 @@ function fieldWidens(target, checker, constraint) {
     const optional = (target.flags & ts.SymbolFlags.Optional) !== 0;
     if (optional) return true;
   }
-  // Doc-stated guarantees — `must be > 0`, `1-31`, `non-empty` — have no
+  // Doc-stated guarantees - `must be > 0`, `1-31`, `non-empty` - have no
   // narrower TypeScript type to move to. `hitRate?: number` fed by an
   // optional `hit_rate` already mirrors its source faithfully; it is flagged
   // only because the RANGE cannot be expressed, and no edit to this file can
   // fix that. Reporting it would be asking for a change that does not exist.
   //
-  // Those guarantees are still enforced — by `no-narrowing-loss`, which needs
+  // Those guarantees are still enforced - by `dead-code`, which needs
   // a dead guard to prove the loss did harm. This rule covers only the kinds
   // where a narrower type is actually available: required-non-null and enums.
   return typeDropsConstraint(type, checker, constraint);
@@ -80,12 +89,12 @@ function isOwnedField(target, rootDir) {
 // Every ProbeResponse but one is produced by an HTTP call, so "every writer
 // supplies a guaranteed value" was true of the one literal we could see and
 // false of the wire. Narrowing `version` there would make the type lie about
-// what the probe actually returns — and HealthCheckService says in a comment
+// what the probe actually returns - and HealthCheckService says in a comment
 // that some probes carry no version at all.
 //
 // The tell is a function TYPE (no body, so nothing to index) returning the
 // type inside a PROMISE: that is the shape of fetching. A synchronous
-// `() => AccountListItemVM[]` is not — its implementation is ours and its
+// `() => AccountListItemVM[]` is not - its implementation is ours and its
 // returns are literals the census already sees, which is how every
 // view-model builder works. Requiring the Promise keeps view models in scope
 // and takes response shapes out.
@@ -225,6 +234,20 @@ export function buildFieldWriteIndex(
           entry(target).writes.push(node.right);
       }
 
+      // `private rafId: number | null = null;`
+      //
+      // The declaration's own initialiser is a write, and missing it made the
+      // census read a field as always-present when its resting value is null.
+      // `sceneEngine.rafId` was exactly this: two `requestAnimationFrame`
+      // assignments were counted, the `= null` beside the type was not, and
+      // the tool proposed narrowing away the very case the field exists to
+      // represent.
+      if (ts.isPropertyDeclaration(node) && node.initializer) {
+        const target = checker.getSymbolAtLocation(node.name);
+        if (target && isOwnedField(target, rootDir))
+          entry(target).writes.push(node.initializer);
+      }
+
       ts.forEachChild(node, visit);
     };
     ts.forEachChild(sf, visit);
@@ -242,7 +265,7 @@ export function constrainedFields(index, checker, rootDir, producedElsewhere) {
   // A write carries a guarantee if it reads a client property, OR if it reads
   // a local field already proven to carry one.
   const constraintOfWrite = (expr) => {
-    const direct = constraintOfExpression(expr, checker);
+    const direct = guaranteeOfExpression(expr, checker);
     if (direct) return direct;
     if (ts.isPropertyAccessExpression(expr)) {
       const sym = checker.getSymbolAtLocation(expr.name);
@@ -253,7 +276,7 @@ export function constrainedFields(index, checker, rootDir, producedElsewhere) {
 
   // Resolved to a FIXED POINT, because a guarantee survives being copied. A
   // view-model field fed from another view-model field whose own writes are
-  // all contract-constrained still carries the contract's guarantee — but on
+  // all contract-constrained still carries the contract's guarantee - but on
   // a single pass its writes resolve to a local field, not a client property,
   // and the whole field is skipped in silence.
   //
@@ -285,7 +308,7 @@ export function constrainedFields(index, checker, rootDir, producedElsewhere) {
       // A shape whose values can arrive by deserialization proves NOTHING,
       // not even transitively. Its census is incomplete, so letting it seed
       // the proven map would launder a guarantee it does not have into every
-      // field downstream of it — which is how ServiceHealth.version came to
+      // field downstream of it - which is how ServiceHealth.version came to
       // be reported off the back of ProbeResponse.
       if (producedElsewhere) {
         const owner = enclosingTypeName(target.declarations?.[0] ?? {});
@@ -306,7 +329,7 @@ export function constrainedFields(index, checker, rootDir, producedElsewhere) {
 export function verdictAcrossWrites(writes, checker, decide) {
   let shared = null;
   for (const expr of writes) {
-    const c = constraintOfExpression(expr, checker);
+    const c = guaranteeOfExpression(expr, checker);
     if (!c) return null;
     const verdict = decide(c);
     if (verdict === null || verdict === "undecided") return null;

@@ -1,4 +1,4 @@
-// narrowing-loss: reading the contract off a generated-client symbol.
+// contract-fidelity: reading the contract off a generated-client symbol.
 //
 // The generated clients are the boundary this linter cares about:
 // values arriving from them carry guarantees the TypeScript type does not
@@ -10,7 +10,7 @@ import { constraintFromDoc, compileDocPatterns } from "./constraints.mjs";
 
 // pnpm resolves the clients through the content-addressed store, so the
 // package name appears mid-path (`node_modules/.pnpm/@acme+...`) and a prefix
-// test would miss every one of them. The scopes themselves are configured —
+// test would miss every one of them. The scopes themselves are configured -
 // see config.mjs.
 import { contractPathRe, getConfig } from "./program.mjs";
 
@@ -47,7 +47,7 @@ function isDataContractMember(decl) {
 
   // Only DATA members carry a contract guarantee. On the class templates a
   // model also declares getters, setters and methods, and every one of them
-  // has a non-nullable function type — read as "required non-null" they would
+  // has a non-nullable function type - read as "required non-null" they would
   // each become a fake guarantee. Lob's SDK yielded 519 of them.
   if (!ts.isPropertySignature(decl) && !ts.isPropertyDeclaration(decl)) {
     return false;
@@ -55,7 +55,7 @@ function isDataContractMember(decl) {
 
   for (let node = decl.parent; node; node = node.parent) {
     // openapi-generator emits models as interfaces (typescript-axios) or as
-    // CLASSES (typescript-node — Lob's and Klaviyo's SDKs both use it).
+    // CLASSES (typescript-node - Lob's and Klaviyo's SDKs both use it).
     // Recognising only interfaces made the scan pass vacuously on the class
     // templates: contract files found, no guarantees read, "clean" reported.
     if (ts.isInterfaceDeclaration(node) || ts.isClassDeclaration(node)) {
@@ -140,7 +140,7 @@ export function constraintForClientProperty(symbol, checker, atNode) {
 
   // A numeric guarantee only means anything about a NUMERIC field. Klaviyo's
   // `operator` is an enum of operator names whose description reads
-  // `e.g. "between 10 and 20 days ago"` — that prose matched the range pattern
+  // `e.g. "between 10 and 20 days ago"` - that prose matched the range pattern
   // and, because doc parsing runs first, overrode the correct enum
   // classification and declared a string field to be a number in [10, 20].
   // Gating on the field's own type kills the class: a description is evidence
@@ -153,11 +153,18 @@ export function constraintForClientProperty(symbol, checker, atNode) {
     return { ...fromDoc, field: symbol.getName(), baseKind };
   }
 
+  // The type to narrow TO, printed the way a developer would write it.
+  // `typeToString` prefers an alias symbol, so an enum union comes back as
+  // `EntityScope` rather than its members spelled out. This is what turns a
+  // finding into an instruction.
+  const sourceType = checker.typeToString(type);
+
   const members = stringLiteralMembers(type);
   if (members) {
     return {
       kind: "enum-member",
       members,
+      sourceType,
       why: `the contract pins this to ${members.join(" | ")}`,
       source: doc.split(/(?<=[.;])\s+/)[0]?.trim() ?? "",
       field: symbol.getName(),
@@ -168,6 +175,7 @@ export function constraintForClientProperty(symbol, checker, atNode) {
   if (!isOptionalProperty(symbol) && !typeIncludesNullish(type)) {
     return {
       kind: "required-non-null",
+      sourceType,
       why: "the contract declares this required and non-null",
       source: doc.split(/(?<=[.;])\s+/)[0]?.trim() ?? "",
       field: symbol.getName(),
@@ -197,7 +205,7 @@ export function contractPathFor(symbol) {
 
 // How many guarantees the contract actually yields. A scan that finds contract
 // FILES but reads no guarantees from them reports "clean" while checking
-// nothing — the worst failure a linter can have, because it looks like a pass.
+// nothing - the worst failure a linter can have, because it looks like a pass.
 // Lob's SDK is a real example: every generated property is `private "_x"?:`,
 // so there is nothing to enforce and the run is vacuous by construction.
 export function countContractGuarantees(program, checker) {

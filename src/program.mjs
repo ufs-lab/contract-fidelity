@@ -10,15 +10,15 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadConfig, contractPathMatcher } from "./config.mjs";
 
-// The project under analysis is wherever the CLI was invoked — NOT wherever
+// The project under analysis is wherever the CLI was invoked - NOT wherever
 // this package happens to be installed. Deriving it from the tool's own path
 // worked only while the tool was vendored inside the repo it analysed.
 // `CONTRACT_FIDELITY_ROOT` exists so tests can point at a fixture tree.
 export const REPO_ROOT = process.env.CONTRACT_FIDELITY_ROOT ?? process.cwd();
 
 // Loaded on FIRST USE, not on import. A library that throws merely because it
-// was imported cannot be embedded, and its own tests — which build their own
-// programs over fixtures — need no project config at all.
+// was imported cannot be embedded, and its own tests - which build their own
+// programs over fixtures - need no project config at all.
 let cachedConfig = null;
 let cachedPathRe = null;
 
@@ -33,7 +33,7 @@ export function contractPathRe() {
 }
 
 // Tests deliberately construct out-of-contract values, so they are never a
-// violation site. Both scanners still READ them when censusing writers — a
+// violation site. Both scanners still READ them when censusing writers - a
 // test that supplies an unconstrained value proves a branch is reachable.
 export const TEST_FILE_RE = /(?:^|[/.])[^/]+\.(?:test|spec)\.[cm]?[tj]sx?$/;
 
@@ -86,7 +86,7 @@ export function createProgram() {
     // Passing vacuously would be worse than failing: the whole policy is
     // defined by the client contracts.
     throw new Error(
-      `no contract declarations for ${getConfig().contractPackages.join(", ")} in the program — ` +
+      `no contract declarations for ${getConfig().contractPackages.join(", ")} in the program - ` +
         "check `contractPackages`, and that dependencies are installed",
     );
   }

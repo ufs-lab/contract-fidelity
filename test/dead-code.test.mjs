@@ -9,7 +9,7 @@ import {
   decideNumericComparison,
   interval,
 } from "../src/constraints.mjs";
-import { analyzeProgram } from "../src/no-narrowing-loss.mjs";
+import { analyzeProgram } from "../src/dead-code.mjs";
 import { constraintForClientProperty } from "../src/contract.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -263,7 +263,7 @@ test("an assertion helper taking `unknown` is a validator, not a widening", () =
 
 test("a widening that returns a default is still a widening", () => {
   // `unknown[] | undefined` is not a bare `unknown`, and returning 0 asserts
-  // nothing — this must stay in scope.
+  // nothing - this must stay in scope.
   const hit = findings.find((f) => f.widening?.text.includes("textOrEmpty"));
   assert.ok(
     hit,
@@ -324,7 +324,7 @@ test("guarantees are read from the class-based generator template too", () => {
 
   assert.equal(found.get("classAmount")?.kind, "positive");
   // A range in prose describing an EXAMPLE, on a field the contract types as
-  // an enum, is not a numeric guarantee — Klaviyo's `operator` reads
+  // an enum, is not a numeric guarantee - Klaviyo's `operator` reads
   // `e.g. "between 10 and 20 days ago"`.
   assert.equal(found.get("classOperator")?.kind, "enum-member");
   // A method is not a data field.

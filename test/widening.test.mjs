@@ -89,7 +89,7 @@ test("flags an enum union flattened to string", () => {
 });
 
 test("stays silent when the field keeps the contract's shape", () => {
-  // Same guarantee, faithfully declared — nothing to report.
+  // Same guarantee, faithfully declared - nothing to report.
   assert.ok(!names.includes("keptName"));
   assert.ok(!names.includes("keptScope"));
 });
@@ -101,21 +101,21 @@ test("stays silent when a second writer supplies an unconstrained value", () => 
 
 test("does not report a widening with no dead guard as dead code", () => {
   // This is the whole point of the split: `optionalName` has no guard on it
-  // anywhere, so `no-narrowing-loss` must stay silent while this one fires.
+  // anywhere, so `dead-code` must stay silent while this one fires.
   const hit = byName("optionalName");
   assert.ok(hit);
 });
 
-test("a documented range is not reported — there is no narrower type", () => {
+test("a documented range is not reported - there is no narrower type", () => {
   // `amount` carries "must be > 0"; no TypeScript type expresses that, so a
-  // finding here would demand an edit that does not exist. no-narrowing-loss
+  // finding here would demand an edit that does not exist. dead-code
   // owns that guarantee, and needs a dead guard to prove it did harm.
   assert.ok(!names.includes("amount"));
 });
 
 test("a shape produced by an async boundary is not reported", () => {
   // Everything of this shape but one literal comes off the wire, where the
-  // write census cannot see it — narrowing would make the type lie about what
+  // write census cannot see it - narrowing would make the type lie about what
   // the endpoint returns. Regression for HealthCheckService's ProbeResponse.
   assert.ok(
     !names.includes("wireLabel"),
@@ -202,6 +202,6 @@ test("a collection element type wider than its contents is reported", () => {
 });
 
 test("a faithful local annotation is not reported", () => {
-  // Same guarantee, declared exactly — nothing to report.
+  // Same guarantee, declared exactly - nothing to report.
   assert.ok(!declarations.some((d) => d.text.startsWith("faithfulLocal")));
 });

@@ -18,8 +18,9 @@ It reports where the two disagree.
 | Command | What it reports |
 | --- | --- |
 | `contract-fidelity dead-code` | A guarantee was dropped, and code downstream guards a value that cannot arrive. |
-| `contract-fidelity widening` | The widening alone. A declaration is wider than the contract value that feeds it. |
+| `contract-fidelity widening` | The widening alone. A declaration is wider than every value that reaches it. |
 | `contract-fidelity contracts` | An audit. Every guarantee the tool believes it read. |
+| `contract-fidelity optional-fields` | A ranked list of the schema work. Not a gate. |
 
 ## Install
 
@@ -47,6 +48,8 @@ Do not use both files.
   "tsconfig": "tsconfig.json",
   "scanRoots": ["src"],
   "trustContract": true,
+  "inferConstraints": true,
+  "closedWorld": true,
   "baselineDir": ".contract-fidelity",
   "docPatterns": []
 }
@@ -58,6 +61,8 @@ Do not use both files.
 | `tsconfig` | `tsconfig.json` | The project the tool analyses. |
 | `scanRoots` | `["src"]` | The directories the tool scans for violations. |
 | `trustContract` | `true` | Whether a guard on a direct contract read is a violation. |
+| `inferConstraints` | `true` | Whether the checker's own types count as guarantees. |
+| `closedWorld` | `true` | Whether the callers in this program are all the callers. |
 | `baselineDir` | `.contract-fidelity` | Where the tool writes the baselines. |
 | `docPatterns` | `[]` | Extra prose patterns for your own generator. |
 
@@ -115,6 +120,83 @@ The prose heuristics are tuned to `openapi-generator` descriptions.
 The required-non-null detection and the enum detection do not depend on the
 generator, and they carry most of the value in practice.
 
+## Two sources of a guarantee
+
+A contract is not the only thing that can state what a value is.
+The checker states it too, and the loss is the same either way.
+
+```ts
+function label(name: string | undefined) { ... }   // every caller passes string
+const scope = row.scope as string;                 // row.scope is a named union
+```
+
+Neither example has a contract in it.
+Both replaced a type that carried information with one that carries less.
+The defensive code written downstream then looks necessary to the reviewer and
+to the compiler alike.
+
+So the tool reads guarantees from two places:
+
+| Source | What it can state |
+| --- | --- |
+| A generated contract | Everything below, plus prose the type cannot hold |
+| The checker's own type | `required-non-null` and `enum-member` only |
+
+A contract wins when there is one, because it names a field a reader can look
+up.
+The `origin` on each finding says which source it came from, and a finding
+never says "the contract" about a guarantee the checker supplied.
+
+Set `inferConstraints` to `false` to use contracts alone.
+
+### The limits on an inferred guarantee
+
+An inferred guarantee is weaker than a contract, so the tool asks more of it.
+
+A contract that says "required" contradicts any nullish declaration.
+The checker says only that the values seen so far were present, so a report
+needs the one shape with a mechanical fix: the declared type is the source
+type with nullish added, and nothing else.
+
+Three more cuts, each measured against a real application:
+
+- A literal type is not a narrowing target.
+  One caller passing `"What this page is"` does not mean the prop should be
+  typed `"What this page is"`.
+- An anonymous union is not a narrowing target.
+  `ColorTheme` is a decision the codebase already made, and narrowing to it is
+  a one-word edit.
+  Two prose sentences joined by a bar is an implementation detail.
+- A suggestion must name a type.
+  A whole function signature, an object type spelled out, `any[]`, or the
+  declared type repeated back are all diagnostics nobody can apply.
+
+Without these, the rule produced 1,224 findings on a real codebase and about
+half were nonsense.
+With them it produces 515, and each one names an edit.
+
+Two soundness bugs surfaced in the same exercise, and both are fixed.
+A property declaration's own initialiser was not counted as a write, so
+`private rafId: number | null = null` looked always-present and the tool
+proposed narrowing away the very case the field exists for.
+A function that throws on an absent value is a validator whatever it spells
+its parameter, so `assertRequired(value: T | undefined)` is no longer reported
+across its 21 call sites.
+
+## The closed world
+
+`closedWorld` says whether the callers in this program are all the callers
+there are.
+
+For an application, they are.
+An exported function called only from inside the repository is fully censused,
+so a unanimous verdict across those calls is a proof.
+
+For a library, they are not.
+Its exports are called by code this program will never see, and a census of
+the calls it can see proves nothing about the calls it cannot.
+Set `closedWorld` to `false`, and only module-local functions stay provable.
+
 ## The contract is trusted
 
 The generated client is the source of truth.
@@ -147,7 +229,11 @@ So is `!name` where `""` is a legal value.
 ## Where a guarantee gets dropped
 
 Six carriers ask the same question.
-Is this declaration wider than the contract value that flows into it?
+Is this declaration wider than every value that flows into it?
+
+The `widening` check needs no dead guard.
+A widening is falsifiable on its own, and to wait for somebody to write the
+dead check first is to report the disease only after it has made a symptom.
 
 | Carrier | Example |
 | --- | --- |
@@ -305,6 +391,8 @@ contract-fidelity widening --list
 contract-fidelity widening --update-baseline
 
 contract-fidelity contracts                              # audit the index
+contract-fidelity optional-fields                        # rank the schema work
+contract-fidelity optional-fields --list --json
 ```
 
 The scan builds a real TypeScript program from the configured `tsconfig`.
@@ -313,14 +401,55 @@ The tool needs the checker to follow a value across a call, and no regex is an
 honest substitute.
 
 The baselines live in `baselineDir`, one file per check.
-A check fails when a file exceeds its baseline.
-It also fails when a file that is absent from the baseline has any violation.
-`--update-baseline` refuses to raise a count without `--force`.
+A baseline records the SET of findings, not a count per file.
+
+A count passes the one trade this tool exists to catch.
+Fix a finding, add another in the same file, and the count does not move.
+That is the edit a model makes when it is told to clear a lint.
+A set makes "new finding" exact.
+
+Each finding is identified by the file, the text at fault, the contract it
+disagrees with, and the kind of guarantee.
+The line number is deliberately absent, because line numbers churn on every
+edit above them.
+`--update-baseline` refuses to ADD a finding without `--force`.
+
+A version 1 baseline, which held a count per file, is refused rather than read
+as empty.
+Re-seed it with `--update-baseline --force`, then read the diff.
 
 The tool fails loudly when the program holds no contract declarations, for
 example before an install.
 It does not pass vacuously.
 The contracts define the whole policy.
+
+## The schema work queue
+
+`contract-fidelity optional-fields` is not a gate.
+It is a ranked list of work for whoever owns the OpenAPI documents.
+
+A guard on a field the schema declares optional cannot be called dead.
+The schema says the field may be absent, so the check is correct, and no
+analysis of the consuming code can say otherwise.
+But most such fields are optional only because nobody wrote `required`.
+The service returns them every time.
+
+```text
+580 guard(s) on 309 optional contract field(s), ranked by how much code
+each one costs.
+
+    24  AccountResponse.account_id       ?. x24
+    18  Template.examples                ?? x11, ?. x6, !x x1
+    11  Programme.executing_revision     === / !== null | undefined x8, ?? x2, ?. x1
+```
+
+Mark the field required upstream, regenerate the client, and every guard
+counted here becomes a `dead-code` finding.
+That scanner then deletes them.
+
+This is the only honest way to reach the defensive code that is legal.
+The two gates report what is provably wrong; this command measures what is
+merely unnecessary, and hands it to the people who can fix it at source.
 
 ## Fix a finding
 
@@ -383,8 +512,8 @@ That handoff is the point.
 | `src/program.mjs` | The shared TypeScript program, and the file-scope rules. |
 | `src/config.mjs` | Configuration load and validation. |
 | `src/ratchet.mjs` | The down-only baseline. |
-| `src/no-narrowing-loss.mjs` | The `dead-code` command. |
-| `src/no-widened-fields.mjs` | The `widening` command. |
+| `src/dead-code.mjs` | The `dead-code` command. |
+| `src/widening.mjs` | The `widening` command. |
 
 ## Development
 

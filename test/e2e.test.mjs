@@ -3,7 +3,7 @@
 // Every other test calls `analyzeProgram` directly on a fixture tree that
 // happens to contain `src/`. That skips bin -> config -> createProgram ->
 // ratchet entirely, and it hid a real defect: three scan-scope tests in
-// no-narrowing-loss.mjs and one in fields.mjs compared against a hardcoded
+// dead-code.mjs and one in fields.mjs compared against a hardcoded
 // `src/`, so a project configured with any other `scanRoots` was scanned for
 // nothing and told it was clean. A vacuous pass is worse than a wrong answer,
 // because nobody investigates a green check.
@@ -50,6 +50,19 @@ test("widening honours a scanRoots other than src", () => {
   assert.doesNotMatch(out, /clean \(0 violations\)/);
 });
 
+// A finding a model can apply, rather than one it has to interpret.
+test("widening names the type to narrow to", () => {
+  const out = run(["widening", "--list"]);
+  // The alias, not its members spelled out: `Scope`, not `"HOUSE" | ...`.
+  assert.match(out, /narrow to: Scope/);
+  assert.match(out, /narrow to: string/);
+
+  const rows = JSON.parse(run(["widening", "--json"]));
+  const scope = rows.find((r) => r.contractField === "scope");
+  assert.equal(scope.suggestedType, "Scope");
+  assert.equal(scope.constraintKind, "enum-member");
+});
+
 // openapi-generator emits models as interfaces (typescript-axios) or as
 // classes (typescript-node). The audit walked interfaces only, so on a
 // class-emitting SDK it printed nothing and read as "no guarantees here".
@@ -67,4 +80,21 @@ test("the contracts audit sees class models, not just interfaces", () => {
 test("the CLI rejects an unknown command", () => {
   const out = run(["nonsense"]);
   assert.match(out, /unknown command nonsense/);
+});
+
+// The schema work queue. Not a gate: a ranked list of what to fix upstream.
+test("optional-fields ranks the guards a schema forces", () => {
+  const out = run(["optional-fields"]);
+  assert.match(out, /Movement\.note/);
+  assert.match(out, /\?\? x1/);
+  // A required field's guards belong to dead-code, not here.
+  assert.doesNotMatch(out, /Movement\.amount/);
+});
+
+test("optional-fields reports per-site detail as JSON", () => {
+  const rows = JSON.parse(run(["optional-fields", "--json"]));
+  const note = rows.find((r) => r.field === "Movement.note");
+  assert.equal(note.guards, 2);
+  assert.equal(note.sites.length, 2);
+  assert.ok(note.sites.every((s) => s.file === "app/orders.ts"));
 });
