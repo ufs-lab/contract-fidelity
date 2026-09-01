@@ -354,6 +354,71 @@ export function buildFieldWriteIndex(
         }
       }
 
+      // A WHOLE object of one declared type flowing into a slot of another.
+      //
+      //   <TrendArrow indicator={row} />      // row: RuntimeIndicator
+      //   useSlot(x)                          // x: Src, slot: Slot
+      //
+      // No literal writes `Slot.v` here, so the per-field census never sees
+      // this flow, and `Slot.v` was proven from the one literal elsewhere that
+      // did supply it. But every field of Slot receives whatever the source
+      // type's field holds. When the source field is optional, nullable or
+      // absent, the slot's field can be absent too, and the only sound answer
+      // is to disqualify it. TrendArrow.trendPercentage was reported, and
+      // narrowing it produced six compile errors, for exactly this reason.
+      //
+      // Only disqualification is applied here. A present source field is not
+      // pushed as a write, because there is no expression to push; the slot
+      // then rests on its literal writes, or stays unproven. Sound either way.
+      const wholeObjectSlots = [];
+      if (ts.isJsxExpression(node) && node.expression) {
+        wholeObjectSlots.push(node.expression);
+      } else if (ts.isCallExpression(node) || ts.isNewExpression(node)) {
+        for (const arg of node.arguments ?? []) wholeObjectSlots.push(arg);
+      } else if (
+        ts.isBinaryExpression(node) &&
+        node.operatorToken.kind === ts.SyntaxKind.EqualsToken
+      ) {
+        wholeObjectSlots.push(node.right);
+      } else if (ts.isVariableDeclaration(node) && node.type && node.initializer) {
+        wholeObjectSlots.push(node.initializer);
+      } else if (ts.isReturnStatement(node) && node.expression) {
+        wholeObjectSlots.push(node.expression);
+      } else if (ts.isPropertyAssignment(node)) {
+        wholeObjectSlots.push(node.initializer);
+      }
+      for (const expr of wholeObjectSlots) {
+        if (ts.isObjectLiteralExpression(expr) || ts.isSpreadElement(expr)) {
+          continue; // a literal is censused field by field above
+        }
+        const slotType = checker.getContextualType(expr);
+        const valueType = checker.getTypeAtLocation(expr);
+        if (!slotType || !valueType) continue;
+        const objectMembers = (t) =>
+          (t.isUnion() ? t.types : [t]).filter(
+            (m) => (m.flags & ts.TypeFlags.Object) !== 0,
+          );
+        for (const slot of objectMembers(slotType)) {
+          for (const value of objectMembers(valueType)) {
+            if (slot === value) continue;
+            if (slot.symbol && slot.symbol === value.symbol) continue;
+            for (const slotProp of checker.getPropertiesOfType(slot)) {
+              if ((slotProp.flags & ts.SymbolFlags.Optional) === 0) continue;
+              if (!isOwnedField(slotProp, rootDir)) continue;
+              const sourceProp = value.getProperty(slotProp.getName());
+              const absent =
+                !sourceProp ||
+                (sourceProp.flags & ts.SymbolFlags.Optional) !== 0 ||
+                dropsGuarantee(
+                  checker.getTypeOfSymbolAtLocation(sourceProp, expr),
+                  checker,
+                );
+              if (absent) entry(slotProp).disqualified = true;
+            }
+          }
+        }
+      }
+
       // `obj.field = expr`
       if (
         ts.isBinaryExpression(node) &&

@@ -77,3 +77,23 @@ export function inlineCast(raw: Record<string, unknown>): number {
   shaped.examples = list.map((e) => e);
   return list.length;
 }
+
+// (g) a WHOLE object of one declared type flowing into a slot of another.
+// Nothing writes Slot.v as a literal except one caller, so per-field
+// censusing proves it; but `pass` hands a Src straight through, and Src.v is
+// optional. Slot.v can be absent.
+export interface Src {
+  v?: number;
+}
+export interface Slot {
+  v?: number;
+}
+export function useSlot(s: Slot): number {
+  return s.v ?? 0;
+}
+export function literalCaller(): number {
+  return useSlot({ v: 1 });
+}
+export function pass(x: Src): number {
+  return useSlot(x);
+}
