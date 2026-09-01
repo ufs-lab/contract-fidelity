@@ -265,7 +265,11 @@ test("the census is keyed by declaration, not by symbol instance", () => {
   // Opts.mode omitted through Partial<Opts>. Under per-instance keying each
   // instantiation kept its own census and the omission never reached the
   // declared field.
-  const rows = JSON.parse(run(["widening", "--json"]));
+  // Scoped to census.ts: orders.ts carries a contract-anchored `label?:`
+  // that is a real finding and must stay.
+  const rows = JSON.parse(run(["widening", "--json"])).filter(
+    (r) => r.file === "app/census.ts",
+  );
   assert.equal(rows.some((r) => r.declared.includes("label?: string")), false);
   assert.equal(rows.some((r) => r.declared.includes("mode?: string")), false);
 });
