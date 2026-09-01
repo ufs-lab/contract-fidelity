@@ -1,0 +1,5 @@
+{
+  "contractPackages": ["@acme"],
+  "scanRoots": ["test"],
+  "trustContract": true
+}

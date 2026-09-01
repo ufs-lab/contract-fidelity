@@ -1,0 +1,20 @@
+name: test
+on:
+  push: { branches: [main] }
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        # The analysis is compiler-API code; a TypeScript bump can change what
+        # the checker reports, so the supported range is tested, not assumed.
+        typescript: ["5.5", "5.9", "latest"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: "22" }
+      - run: npm install --no-audit --no-fund
+      - run: npm install --no-save typescript@${{ matrix.typescript }}
+      - run: npm test

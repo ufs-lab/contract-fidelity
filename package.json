@@ -1,0 +1,41 @@
+{
+  "name": "contract-fidelity",
+  "version": "0.1.0",
+  "description": "Find defensive code written against guarantees your API contract already gives, and the type widening that made it look necessary.",
+  "type": "module",
+  "license": "MIT",
+  "bin": {
+    "contract-fidelity": "./bin/contract-fidelity.mjs"
+  },
+  "exports": {
+    ".": "./src/index.mjs"
+  },
+  "files": [
+    "src",
+    "bin",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  },
+  "peerDependencies": {
+    "typescript": ">=5.0.0"
+  },
+  "engines": {
+    "node": ">=18.18"
+  },
+  "keywords": [
+    "typescript",
+    "lint",
+    "openapi",
+    "openapi-generator",
+    "type-safety",
+    "dead-code",
+    "static-analysis",
+    "contract"
+  ],
+  "devDependencies": {
+    "typescript": "^5.9.3"
+  }
+}
