@@ -100,6 +100,11 @@ function isOwnedField(target, rootDir) {
 // and takes response shapes out.
 function typesProducedOutsideLiterals(program, checker, isCandidateFile) {
   const names = new Set();
+  // Property declarations reached through a cast target that has no name to
+  // collect: `clone(x) as Base & { examples?: unknown }`. The literal's
+  // `examples` is a declaration like any other, and a value cast INTO it
+  // arrived from outside the census exactly as a named type's would.
+  const decls = new Set();
   for (const sf of program.getSourceFiles()) {
     if (sf.isDeclarationFile || !isCandidateFile(sf)) continue;
     const visit = (node) => {
@@ -131,10 +136,35 @@ function typesProducedOutsideLiterals(program, checker, isCandidateFile) {
         };
         findPromise(node.type);
       }
+
+      // `JSON.parse(raw) as Stored`, `config as RetryableRequestConfig`,
+      // `clone(x) as Base & { examples?: unknown }`.
+      //
+      // A cast says the value did not come from a literal this census can
+      // read: it was parsed, received, or borrowed from a library. Every
+      // write the census DOES see for such a type is then only a fraction of
+      // the values it holds, and proving anything from that fraction is how a
+      // localStorage settings shape got reported as always-present when its
+      // whole reason to be optional was records written before the field
+      // existed.
+      if (ts.isAsExpression(node) || ts.isTypeAssertionExpression(node)) {
+        const collectTargets = (t) => {
+          if (!t) return;
+          if (ts.isTypeReferenceNode(t) && ts.isIdentifier(t.typeName)) {
+            names.add(t.typeName.text);
+          }
+          if (ts.isTypeLiteralNode(t)) {
+            for (const member of t.members) decls.add(member);
+          }
+          ts.forEachChild(t, collectTargets);
+        };
+        collectTargets(node.type);
+      }
       ts.forEachChild(node, visit);
     };
     ts.forEachChild(sf, visit);
   }
+  names.decls = decls;
   return names;
 }
 
@@ -163,7 +193,32 @@ export function buildFieldWriteIndex(
 ) {
   const index = new Map(); // target symbol -> { writes: [], disqualified: bool }
 
-  const entry = (target) => {
+  // One census per DECLARATION, whatever symbol instance a write resolves to.
+  //
+  // A generic type instantiated three ways yields three property symbols for
+  // one field, and a mapped type (Partial<T>, Pick<T, K>) yields another. Each
+  // symbol carried its own write list, so a null written through one
+  // instantiation could not disqualify a field proven through a second, and
+  // an omission seen through Partial<T> never reached the declared field at
+  // all. `ReportInput<K, T>.data` was reported four times from one line for
+  // exactly this reason, while the arm that wrote null sat in a fifth census
+  // nobody consulted. Every instance still points at the same declaration,
+  // so that is the key.
+  const canonical = new Map(); // declaration node -> the symbol we index under
+  const keyOf = (symbol) => {
+    const decl = symbol?.declarations?.[0];
+    if (!decl) return symbol;
+    if (!canonical.has(decl)) {
+      const declared = decl.name
+        ? checker.getSymbolAtLocation(decl.name)
+        : null;
+      canonical.set(decl, declared ?? symbol);
+    }
+    return canonical.get(decl);
+  };
+
+  const entry = (rawTarget) => {
+    const target = keyOf(rawTarget);
     if (!index.has(target))
       index.set(target, { writes: [], disqualified: false });
     return index.get(target);
@@ -182,7 +237,20 @@ export function buildFieldWriteIndex(
       // `{ field: expr }` against a contextual type
       if (ts.isObjectLiteralExpression(node)) {
         const contextual = checker.getContextualType(node);
-        if (contextual) {
+        // `useState<S>` and `SetStateAction<S>` hand a literal a UNION as its
+        // contextual type. `getPropertyOfType` on a union returns only the
+        // properties common to every member, so against `S | ((prev: S) => S)`
+        // it returns nothing and the write was silently dropped from the
+        // census. A dropped write is the most dangerous outcome there is: it
+        // is the `lastRequest: null` that would have disqualified the field.
+        // Resolve against each object-like member instead.
+        const shapes = contextual
+          ? (contextual.isUnion() ? contextual.types : [contextual]).filter(
+              (t) => (t.flags & ts.TypeFlags.Object) !== 0,
+            )
+          : [];
+        for (const shape of shapes) {
+          const contextual = shape;
           // OMITTING an optional field is a write of "absent".
           //
           // Without this the census sees only the literals that supply the
@@ -380,6 +448,7 @@ export function constrainedFields(index, checker, rootDir, producedElsewhere) {
       // the proven map would launder a guarantee it does not have into every
       // field downstream of it - which is how ServiceHealth.version came to
       // be reported off the back of ProbeResponse.
+      if (producedElsewhere?.decls?.has(target.declarations?.[0])) continue;
       if (producedElsewhere) {
         const owner = enclosingTypeName(target.declarations?.[0] ?? {});
         if (owner && producedElsewhere.has(owner)) continue;
