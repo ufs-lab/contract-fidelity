@@ -61,6 +61,9 @@ func (p *Program) comparisonGuard(pkg *packages.Package, be *ast.BinaryExpr) (De
 		return DeadGuard{}, false
 	}
 	info := pkg.TypesInfo
+	if isNil(info, be.X) != isNil(info, be.Y) && (be.Op == token.EQL || be.Op == token.NEQ) {
+		return p.nilGuard(pkg, be)
+	}
 	lhsConst, lhsOK := numericConst(info, be.X)
 	rhsConst, rhsOK := numericConst(info, be.Y)
 	var (
@@ -76,10 +79,7 @@ func (p *Program) comparisonGuard(pkg *packages.Package, be *ast.BinaryExpr) (De
 		valueExpr, k, op = be.Y, lhsConst, constraint.FlipOperator(op)
 	}
 	v := p.valueOf(pkg, valueExpr, 0)
-	if !v.ok || !v.fromContract {
-		return DeadGuard{}, false
-	}
-	if v.direct && !p.opts.TrustContract {
+	if !p.reportable(v) {
 		return DeadGuard{}, false
 	}
 	for _, g := range v.gs {
@@ -90,22 +90,70 @@ func (p *Program) comparisonGuard(pkg *packages.Package, be *ast.BinaryExpr) (De
 		if verdict == constraint.Undecided {
 			continue
 		}
-		pos := p.position(be.Pos())
-		return DeadGuard{
-			File:     p.relPath(pos.Filename),
-			Line:     pos.Line,
-			Guard:    p.nodeText(pkg, be),
-			Verdict:  verdict,
-			Contract: contractOf(v.origins),
-			Kind:     g.Kind,
-			Why:      g.Why,
-			Evidence: g.Evidence,
-			Origins:  toOrigins(v.origins),
-			Widening: p.wideningOf(v),
-			Boundary: v.direct,
-		}, true
+		return p.deadGuard(pkg, be, be, verdict, v, g), true
 	}
 	return DeadGuard{}, false
+}
+
+// reportable says whether a value can carry a finding: known, fed by a
+// contract or (when enabled) an inference, and not a direct contract read
+// the config asked to leave alone.
+func (p *Program) reportable(v value) bool {
+	if !v.ok || v.origin == "" {
+		return false
+	}
+	if v.direct && !p.opts.TrustContract {
+		return false
+	}
+	return true
+}
+
+func (p *Program) deadGuard(pkg *packages.Package, at ast.Node, guard ast.Node, verdict constraint.Verdict, v value, g constraint.Guarantee) DeadGuard {
+	pos := p.position(at.Pos())
+	text := p.nodeText(pkg, guard)
+	if _, isSwitch := guard.(*ast.SwitchStmt); isSwitch {
+		text = "switch " + p.nodeText(pkg, guard.(*ast.SwitchStmt).Tag) + " { default: }"
+	}
+	return DeadGuard{
+		File:     p.relPath(pos.Filename),
+		Line:     pos.Line,
+		Guard:    text,
+		Verdict:  verdict,
+		Contract: contractOf(v.origins, g),
+		Kind:     g.Kind,
+		Why:      g.Why,
+		Evidence: g.Evidence,
+		Origins:  toOrigins(v.origins),
+		Widening: p.wideningOf(v),
+		Boundary: v.direct,
+		Origin:   g.Origin,
+	}
+}
+
+func isNil(info *types.Info, e ast.Expr) bool {
+	tv, ok := info.Types[e]
+	return ok && tv.IsNil()
+}
+
+// nilGuard decides `x == nil` and `x != nil` against a non-null guarantee.
+func (p *Program) nilGuard(pkg *packages.Package, be *ast.BinaryExpr) (DeadGuard, bool) {
+	valueExpr := be.X
+	if isNil(pkg.TypesInfo, be.X) {
+		valueExpr = be.Y
+	}
+	v := p.valueOf(pkg, valueExpr, 0)
+	if !p.reportable(v) {
+		return DeadGuard{}, false
+	}
+	g, ok := constraint.Has(v.gs, constraint.KindRequiredNonNull)
+	if !ok || g.Origin == "" {
+		return DeadGuard{}, false
+	}
+	verdict := constraint.AlwaysFalse
+	if be.Op == token.NEQ {
+		verdict = constraint.AlwaysTrue
+	}
+	return p.deadGuard(pkg, be, be, verdict, v, g), true
 }
 
 func numericConst(info *types.Info, e ast.Expr) (float64, bool) {
@@ -128,14 +176,11 @@ func (p *Program) switchGuard(pkg *packages.Package, sw *ast.SwitchStmt) (DeadGu
 		return DeadGuard{}, false
 	}
 	v := p.valueOf(pkg, sw.Tag, 0)
-	if !v.ok || !v.fromContract {
-		return DeadGuard{}, false
-	}
-	if v.direct && !p.opts.TrustContract {
+	if !p.reportable(v) {
 		return DeadGuard{}, false
 	}
 	enum, ok := constraint.Enum(v.gs)
-	if !ok {
+	if !ok || enum.Origin == "" {
 		return DeadGuard{}, false
 	}
 	cased := map[string]bool{}
@@ -162,20 +207,7 @@ func (p *Program) switchGuard(pkg *packages.Package, sw *ast.SwitchStmt) (DeadGu
 			return DeadGuard{}, false
 		}
 	}
-	pos := p.position(def.Pos())
-	return DeadGuard{
-		File:     p.relPath(pos.Filename),
-		Line:     pos.Line,
-		Guard:    "switch " + p.nodeText(pkg, sw.Tag) + " { default: }",
-		Verdict:  constraint.AlwaysFalse,
-		Contract: contractOf(v.origins),
-		Kind:     constraint.KindEnumMember,
-		Why:      enum.Why,
-		Evidence: enum.Evidence,
-		Origins:  toOrigins(v.origins),
-		Widening: p.wideningOf(v),
-		Boundary: v.direct,
-	}, true
+	return p.deadGuard(pkg, def, sw, constraint.AlwaysFalse, v, enum), true
 }
 
 // wideningOf names the nearest carrier that holds the value in a wider

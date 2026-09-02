@@ -42,10 +42,12 @@ type carrier struct {
 	writes       []write
 	disqualified string
 
-	resolved     []constraint.Guarantee
-	resolvedOK   bool
-	fromContract bool
-	origins      []origin
+	resolved   []constraint.Guarantee
+	resolvedOK bool
+	// origin is the strongest source among the writes: contract, inferred,
+	// or empty when only literals and zero values reach the carrier.
+	origin  string
+	origins []origin
 }
 
 // write is one value that reaches a carrier.

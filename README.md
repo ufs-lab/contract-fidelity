@@ -633,10 +633,76 @@ the program, an address passed to a call outside the program, and a map
 built by a call.
 
 A guard is dead when a numeric comparison against a constant is decided,
-when a `switch` has a `default:` after a case for every enum member, or
-when `len(x)` is compared against a non-empty guarantee.
-Nil guards are not reported: a required field is a plain value in Go, and
-the compiler already refuses `== nil` on it.
+when a `switch` has a `default:` after a case for every enum member, when
+`len(x)` is compared against a non-empty guarantee, or when `x == nil` /
+`x != nil` tests a value that carries `required-non-null`.
+A required scalar is a plain value in Go and the compiler refuses `== nil`
+on it, so the nil guards that matter are on arrays and maps: the generated
+decode admits `null` for those, and the spec's `required` without
+`nullable` is what makes the check dead.
+
+### Two sources of a guarantee, in Go
+
+`inferConstraints` (default `true`) lets the program's own types and writes
+supply a guarantee, as in the TypeScript tool:
+
+| Inferred kind | What the census saw |
+| --- | --- |
+| `enum-member` | Every write is a constant of one named string type declared in the program (`outcomeOK`, `outcomeFail`); a `string` fed only by them could be that type |
+| `required-non-null` | Every write is an address (`&x`), a literal, a `make` or a `new`; `p == nil` on it is dead |
+
+Each finding prints its origin, `contract:` or `inferred:`, and an inferred
+finding names the program's type, never a contract field.
+`explain NAME` prints each guarantee with its origin in angle brackets.
+
+### go vet and golangci-lint
+
+`go/analyzer` is a `go/analysis` Analyzer.
+The analysis is whole-program, so the analyzer loads the program once per
+configuration root (the directory that holds `contract-fidelity.config.json`,
+found upward from each package) and reports the findings that fall in the
+package it is visiting.
+`go vet` starts one process per package; the findings are cached on disk,
+keyed by the module's Go sources and the config, so a run over N packages
+loads the program once.
+
+```bash
+go install github.com/ufs-lab/contract-fidelity/go/cmd/contract-fidelity-vet@latest
+go vet -vettool=$(command -v contract-fidelity-vet) ./...
+go vet -vettool=$(command -v contract-fidelity-vet) -widening=false ./...   # dead guards only
+```
+
+Flags: `-config FILE`, `-dead-code=false`, `-widening=false`,
+`-census-tests=false`, `-cache=false`, `-cache-dir DIR`.
+
+As a golangci-lint module plugin, `.custom-gcl.yml`:
+
+```yaml
+version: v2.3.0
+plugins:
+  - module: github.com/ufs-lab/contract-fidelity/go
+    import: github.com/ufs-lab/contract-fidelity/go/plugin
+    version: latest
+```
+
+and `.golangci.yml`:
+
+```yaml
+version: "2"
+linters:
+  enable:
+    - contractfidelity
+  settings:
+    custom:
+      contractfidelity:
+        type: module
+        settings:
+          widening: false
+```
+
+Under a `go/analysis` driver there is no down-only baseline; use
+golangci-lint's `issues.new-from-rev` to ratchet, or the CLI for the
+baseline file.
 
 ### Validation
 
@@ -647,3 +713,6 @@ had missed (`len(results) == 0` on a `minItems: 1` field), with no false
 positives.
 `widening` reported 15 declarations, each an `int` or `int64` fed only by
 an `int32`, or a `string` fed only by an enum.
+With nil guards and inference on, the same service added four
+`created_ids == nil` boundary checks on a required, non-nullable array and
+two inferred non-null checks, each confirmed against the census.

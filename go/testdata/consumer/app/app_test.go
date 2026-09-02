@@ -8,4 +8,5 @@ func TestLive(t *testing.T) {
 	}
 	v := view{Status: "PARTIAL"}
 	_ = classify(v)
+	_ = describe(nil)
 }

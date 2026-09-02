@@ -18,7 +18,7 @@ type CarrierReport struct {
 	Line         int      `json:"line"`
 	Disqualified string   `json:"disqualified,omitempty"`
 	Resolved     bool     `json:"resolved"`
-	FromContract bool     `json:"fromContract"`
+	Origin       string   `json:"origin,omitempty"`
 	Guarantees   []string `json:"guarantees"`
 	Writes       []string `json:"writes"`
 }
@@ -39,7 +39,7 @@ func (p *Program) Explain(match string) []CarrierReport {
 			Line:         c.pos.Line,
 			Disqualified: c.disqualified,
 			Resolved:     c.resolvedOK,
-			FromContract: c.fromContract,
+			Origin:       c.origin,
 		}
 		for _, g := range c.resolved {
 			r.Guarantees = append(r.Guarantees, describe(g))
@@ -71,15 +71,23 @@ func (p *Program) Explain(match string) []CarrierReport {
 }
 
 func describe(g constraint.Guarantee) string {
+	var s string
 	switch {
 	case g.Kind == constraint.KindEnumMember:
-		return fmt.Sprintf("%s{%s}", g.Kind, strings.Join(g.Members, "|"))
+		s = fmt.Sprintf("%s{%s}", g.Kind, strings.Join(g.Members, "|"))
+		if g.EnumType != "" {
+			s += " " + g.EnumType
+		}
 	case g.IsNumeric() || g.Kind == constraint.KindNonEmptyArray:
-		s := fmt.Sprintf("%s%s", g.Kind, g.Interval)
+		s = fmt.Sprintf("%s%s", g.Kind, g.Interval)
 		if g.IntType != "" {
 			s += " " + g.IntType
 		}
-		return s
+	default:
+		s = string(g.Kind)
 	}
-	return string(g.Kind)
+	if g.Origin != "" {
+		s += " <" + g.Origin + ">"
+	}
+	return s
 }

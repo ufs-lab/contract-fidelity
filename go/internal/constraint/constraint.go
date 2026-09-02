@@ -220,6 +220,29 @@ type Guarantee struct {
 	// Evidence is the doc sentence, schema keyword or type the guarantee
 	// was read from.
 	Evidence string
+	// Origin is OriginContract for a guarantee read off a generated
+	// client, OriginInferred for one the census derived from the program's
+	// own types and writes, and empty for a literal or a zero value.
+	Origin string
+}
+
+// The two sources of a guarantee. A finding names which one it came from,
+// and never says "the contract" about a guarantee the census supplied.
+const (
+	OriginContract = "contract"
+	OriginInferred = "inferred"
+)
+
+// StrongerOrigin picks the origin a join reports: a contract beats an
+// inference, and either beats a literal.
+func StrongerOrigin(a, b string) string {
+	switch {
+	case a == OriginContract || b == OriginContract:
+		return OriginContract
+	case a == OriginInferred || b == OriginInferred:
+		return OriginInferred
+	}
+	return ""
 }
 
 // IsNumeric reports whether the guarantee bounds a number.
@@ -260,10 +283,13 @@ func joinOne(a, b Guarantee) (Guarantee, bool) {
 	case a.IsNumeric() && b.IsNumeric():
 		// A write inside the other's bounds changes nothing about the
 		// carrier: a literal 0 into an int32-typed flow keeps the int32.
+		origin := StrongerOrigin(a.Origin, b.Origin)
 		if Within(b.Interval, a.Interval) {
+			a.Origin = origin
 			return a, true
 		}
 		if Within(a.Interval, b.Interval) {
+			b.Origin = origin
 			return b, true
 		}
 		out := a
@@ -275,6 +301,7 @@ func joinOne(a, b Guarantee) (Guarantee, bool) {
 		out.IntType = ""
 		out.Why = "every value that reaches it is bounded"
 		out.Evidence = ""
+		out.Origin = origin
 		return out, true
 	case a.Kind == KindEnumMember && b.Kind == KindEnumMember:
 		out := a
@@ -288,9 +315,12 @@ func joinOne(a, b Guarantee) (Guarantee, bool) {
 		if a.EnumType != b.EnumType {
 			out.EnumType = ""
 		}
+		out.Origin = StrongerOrigin(a.Origin, b.Origin)
 		return out, true
 	case a.Kind == b.Kind && (a.Kind == KindNonEmptyArray || a.Kind == KindRequiredNonNull):
-		return a, true
+		out := a
+		out.Origin = StrongerOrigin(a.Origin, b.Origin)
+		return out, true
 	}
 	return Guarantee{}, false
 }
@@ -300,7 +330,7 @@ func Dedupe(gs []Guarantee) []Guarantee {
 	seen := map[string]bool{}
 	var out []Guarantee
 	for _, g := range gs {
-		key := fmt.Sprintf("%s|%s|%s|%s|%s", g.Kind, g.Interval, strings.Join(g.Members, ","), g.EnumType, g.IntType)
+		key := fmt.Sprintf("%s|%s|%s|%s|%s|%s", g.Kind, g.Interval, strings.Join(g.Members, ","), g.EnumType, g.IntType, g.Origin)
 		if seen[key] {
 			continue
 		}

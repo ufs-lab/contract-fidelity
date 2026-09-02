@@ -91,6 +91,7 @@ func run(args []string) int {
 		TrustContract:    cfg.Trust(),
 		ClosedWorld:      cfg.Closed(),
 		CensusTests:      censusTests,
+		InferConstraints: cfg.Infer(),
 	})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -181,7 +182,7 @@ func runDeadCode(prog *scan.Program, cfg *config.Config, dir string, f flags) in
 					verdict = "always true"
 				}
 				fmt.Fprintf(os.Stderr, "    %d: `%s` is %s\n", fd.Line, fd.Guard, verdict)
-				fmt.Fprintf(os.Stderr, "      contract: %s - %s", fd.Contract, fd.Why)
+				fmt.Fprintf(os.Stderr, "      %s: %s - %s", fd.Origin, fd.Contract, fd.Why)
 				if fd.Evidence != "" {
 					fmt.Fprintf(os.Stderr, "\n      evidence: %q", fd.Evidence)
 				}
@@ -235,7 +236,7 @@ func runWidening(prog *scan.Program, cfg *config.Config, dir string, f flags) in
 			fmt.Fprintf(os.Stderr, "  %s\n", file)
 			for _, fd := range byFile[file] {
 				fmt.Fprintf(os.Stderr, "    %d: `%s: %s` could be `%s`\n", fd.Line, fd.Declared, fd.Type, fd.Suggested)
-				fmt.Fprintf(os.Stderr, "      contract: %s - %s\n", fd.Contract, fd.Why)
+				fmt.Fprintf(os.Stderr, "      %s: %s - %s\n", fd.Origin, fd.Contract, fd.Why)
 				for _, o := range fd.Origins {
 					fmt.Fprintf(os.Stderr, "      value from: %s:%d `%s`\n", o.File, o.Line, o.Text)
 				}
@@ -315,7 +316,7 @@ func runExplain(prog *scan.Program, args []string, f flags) int {
 		case r.Disqualified != "":
 			fmt.Printf("  disqualified: %s\n", r.Disqualified)
 		case r.Resolved:
-			fmt.Printf("  resolved: %s (from contract: %v)\n", strings.Join(r.Guarantees, ", "), r.FromContract)
+			fmt.Printf("  resolved: %s (origin: %s)\n", strings.Join(r.Guarantees, ", "), r.Origin)
 		default:
 			fmt.Println("  unresolved: a write is unknown")
 		}

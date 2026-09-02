@@ -95,3 +95,6 @@ func (c *Config) Closed() bool { return boolOr(c.ClosedWorld, true) }
 
 // Tests reports censusTests (default true, the upstream behaviour).
 func (c *Config) Tests() bool { return boolOr(c.CensusTests, true) }
+
+// Infer reports inferConstraints (default true).
+func (c *Config) Infer() bool { return boolOr(c.InferConstraints, true) }
