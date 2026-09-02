@@ -5,6 +5,11 @@ declare namespace JSX {
   interface Element {
     readonly kind: "element";
   }
+  // React declares this too, so a component's attributes are contextually
+  // typed `IntrinsicAttributes & Props`: an intersection, never a plain object.
+  interface IntrinsicAttributes {
+    key?: string;
+  }
   interface ElementAttributesProperty {
     props: Record<string, unknown>;
   }

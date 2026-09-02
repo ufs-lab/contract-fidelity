@@ -94,12 +94,11 @@ function isNamedType(printed) {
 export function constraintFromType(type, checker, label) {
   if (!type || statesNothing(type)) return null;
 
-  const sourceType = checker.typeToString(type);
-
   const members = stringLiteralMembers(type);
   if (members) {
     // The union itself IS literals, so isLiteralish does not apply here; what
     // matters is whether it has a name worth narrowing to.
+    const sourceType = checker.typeToString(type);
     if (!isNamedType(sourceType)) return null;
     return {
       kind: "enum-member",
@@ -114,16 +113,25 @@ export function constraintFromType(type, checker, label) {
     };
   }
 
-  if (isLiteralish(type)) return null;
+  // A literal still states its base: `depth: 2` is a present number, and
+  // `Status.Active` is a present `Status`. Before this the write of `2`
+  // stated nothing, so one literal anywhere hid every field it reached from
+  // the census: `size?: number` with `size={16}` at each render was never
+  // reported. The narrowing target is the base type, never the literal.
+  const widened = isLiteralish(type)
+    ? checker.getBaseTypeOfLiteralType(type)
+    : type;
+  const sourceType = checker.typeToString(widened);
+  if (isLiteralish(widened)) return null;
 
-  if (!includesNullish(type)) {
+  if (!includesNullish(widened)) {
     return {
       kind: "required-non-null",
       origin: "inferred",
       sourceType,
       // Kept so the carrier can ask the stricter question: is the declared
       // type this type with nullish added, and nothing else?
-      type,
+      type: widened,
       why: "every value here is present and non-null",
       source: "",
       field: label,
@@ -131,8 +139,8 @@ export function constraintFromType(type, checker, label) {
       // every `typeof` and `Array.isArray` verdict garbage: `Array.isArray`
       // on a mapped array was decided "always-false", because the string
       // "unknown[]" is not the word "array".
-      baseKind: baseKindOf(type, checker),
-      isObjectLike: (type.flags & ts.TypeFlags.Object) !== 0,
+      baseKind: baseKindOf(widened, checker),
+      isObjectLike: (widened.flags & ts.TypeFlags.Object) !== 0,
     };
   }
 
