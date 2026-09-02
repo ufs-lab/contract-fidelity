@@ -4,26 +4,15 @@ import ts from "typescript";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import {
-  buildFieldWriteIndex,
-  constrainedFields,
-  typesProducedOutsideLiterals,
-} from "../src/fields.mjs";
+import { buildGraph, constrainedFields } from "../src/graph.mjs";
 import { findWidenedDeclarations } from "../src/carriers.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const FIXTURES = join(HERE, "__fixtures__");
 
-// The scanner's own `collectViolations` builds the real app program, so the
-// unit tests drive the shared field machinery over the fixture tree instead
-// and assert the same predicate the scanner reports on.
-function widenedFields() {
-  const files = [
-    join(FIXTURES, "src", "cases.ts"),
-    join(FIXTURES, "src", "mixedCallers.ts"),
-    join(FIXTURES, "src", "viewModels.ts"),
-    join(FIXTURES, "src", "widenedFields.ts"),
-  ];
+const isFixture = (sf) => sf.fileName.includes(`${FIXTURES}/src/`);
+
+function fixtureGraph(files) {
   const program = ts.createProgram(files, {
     target: ts.ScriptTarget.ES2020,
     module: ts.ModuleKind.ESNext,
@@ -32,26 +21,24 @@ function widenedFields() {
     noEmit: true,
     skipLibCheck: true,
   });
-  const checker = program.getTypeChecker();
-  const index = buildFieldWriteIndex(
-    program,
-    checker,
-    (sf) => sf.fileName.includes(`${FIXTURES}/src/`),
-    FIXTURES,
-  );
-  const isFixture = (sf) => sf.fileName.includes(`${FIXTURES}/src/`);
-  const producedElsewhere = typesProducedOutsideLiterals(
-    program,
-    checker,
-    isFixture,
-  );
+  return buildGraph(program, program.getTypeChecker(), {
+    rootDir: FIXTURES,
+    isCandidateFile: isFixture,
+  });
+}
+
+// The scanner's own `collectViolations` builds the real app program, so the
+// unit tests drive the shared field machinery over the fixture tree instead
+// and assert the same predicate the scanner reports on.
+function widenedFields() {
+  const graph = fixtureGraph([
+    join(FIXTURES, "src", "cases.ts"),
+    join(FIXTURES, "src", "mixedCallers.ts"),
+    join(FIXTURES, "src", "viewModels.ts"),
+    join(FIXTURES, "src", "widenedFields.ts"),
+  ]);
   const out = [];
-  for (const [target, info] of constrainedFields(
-    index,
-    checker,
-    FIXTURES,
-    producedElsewhere,
-  )) {
+  for (const [target, info] of constrainedFields(graph)) {
     const decl = target.declarations?.[0];
     if (!decl || !decl.type) continue;
     out.push({
@@ -147,24 +134,14 @@ test("an excluded shape does not launder a guarantee downstream", () => {
 // ---------------------------------------------------------------------------
 
 function widenedDeclarations() {
-  const files = [
+  const graph = fixtureGraph([
     join(FIXTURES, "src", "cases.ts"),
     join(FIXTURES, "src", "mixedCallers.ts"),
     join(FIXTURES, "src", "viewModels.ts"),
     join(FIXTURES, "src", "widenedFields.ts"),
     join(FIXTURES, "src", "carriers.ts"),
-  ];
-  const program = ts.createProgram(files, {
-    target: ts.ScriptTarget.ES2020,
-    module: ts.ModuleKind.ESNext,
-    moduleResolution: ts.ModuleResolutionKind.Bundler,
-    strict: true,
-    noEmit: true,
-    skipLibCheck: true,
-  });
-  return findWidenedDeclarations(program, program.getTypeChecker(), (sf) =>
-    sf.fileName.includes(`${FIXTURES}/src/`),
-  );
+  ]);
+  return findWidenedDeclarations(graph, isFixture);
 }
 
 const declarations = widenedDeclarations();

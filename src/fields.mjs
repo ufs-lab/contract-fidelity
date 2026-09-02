@@ -17,9 +17,14 @@
 // write into that field supplies a guaranteed value. A single unaccounted
 // write - a spread, an assignment we cannot resolve - disqualifies the field
 // entirely.
+//
+// This file owns the write census. The graph (graph.mjs) turns the census
+// into edges and solves every field alongside every parameter, local and
+// return slot, so a guarantee that survives a copy survives any number of
+// copies.
 
 import ts from "typescript";
-import { isScannedPath, isTestFile } from "./program.mjs";
+import { isScannedPath } from "./program.mjs";
 import { guaranteeOfExpression } from "./census.mjs";
 import { onlyNullishWasAdded } from "./inferred.mjs";
 import { dropsGuarantee } from "./analyze.mjs";
@@ -78,7 +83,7 @@ export function typeDropsConstraint(type, checker, constraint) {
   return false;
 }
 
-function fieldWidens(target, checker, constraint) {
+export function fieldWidens(target, checker, constraint) {
   const decl = target.declarations?.[0];
   if (!decl) return false;
   const type = checker.getTypeOfSymbolAtLocation(target, decl);
@@ -205,6 +210,20 @@ function enclosingTypeName(decl) {
     }
   }
   return null;
+}
+
+// A shape whose values can arrive by deserialization proves NOTHING, not
+// even transitively. Its census is incomplete, so letting it feed the graph
+// would launder a guarantee it does not have into every field downstream -
+// which is how ServiceHealth.version came to be reported off the back of
+// ProbeResponse.
+export function isProducedElsewhere(target, producedElsewhere) {
+  if (!producedElsewhere) return false;
+  const decl = target.declarations?.[0];
+  if (!decl) return false;
+  if (producedElsewhere.decls?.has(decl)) return true;
+  const owner = enclosingTypeName(decl);
+  return owner !== null && producedElsewhere.has(owner);
 }
 
 // Index every write into every locally-declared field.
@@ -693,88 +712,11 @@ export function buildFieldWriteIndex(
   return index;
 }
 
-// Fields where EVERY write supplies the same guarantee, and the field's own
-// declared type has dropped it.
-export function constrainedFields(index, checker, rootDir, producedElsewhere) {
-  const proven = new Map(); // target symbol -> constraint, for transitive use
-  const out = new Map();
-
-  // A write carries a guarantee if it reads a client property, OR if it reads
-  // a local field already proven to carry one.
-  const constraintOfWrite = (expr) => {
-    const direct = guaranteeOfExpression(expr, checker);
-    if (direct) return direct;
-    if (ts.isPropertyAccessExpression(expr)) {
-      const sym = checker.getSymbolAtLocation(expr.name);
-      if (sym && proven.has(sym)) return proven.get(sym);
-    }
-    return null;
-  };
-
-  // Resolved to a FIXED POINT, because a guarantee survives being copied. A
-  // view-model field fed from another view-model field whose own writes are
-  // all contract-constrained still carries the contract's guarantee - but on
-  // a single pass its writes resolve to a local field, not a client property,
-  // and the whole field is skipped in silence.
-  //
-  // That is how CurrencyExposureAccountDetailVM was missed: it mirrored a
-  // query type field for field, and surfaced only when narrowing its source
-  // broke the typecheck. Iterating until nothing new is proven closes it.
-  let changed = true;
-  while (changed) {
-    changed = false;
-    for (const [target, { writes, disqualified }] of index) {
-      if (proven.has(target) || disqualified || writes.length === 0) continue;
-      // A test supplies whatever the test needs. It proves a branch is
-      // REACHABLE, which is why the census reads tests at all, but it cannot
-      // prove that production always supplies a value. Two findings in a
-      // sample of thirty rested on a single write in a `.test.ts`.
-      if (writes.every((expr) => isTestFile(expr.getSourceFile().fileName))) {
-        continue;
-      }
-
-      let shared = null;
-      let ok = true;
-      for (const expr of writes) {
-        const c = constraintOfWrite(expr);
-        if (!c) {
-          ok = false;
-          break;
-        }
-        if (shared === null) shared = c;
-        else if (shared.kind !== c.kind) {
-          ok = false;
-          break;
-        }
-      }
-      if (!ok || !shared) continue;
-
-      // A shape whose values can arrive by deserialization proves NOTHING,
-      // not even transitively. Its census is incomplete, so letting it seed
-      // the proven map would launder a guarantee it does not have into every
-      // field downstream of it - which is how ServiceHealth.version came to
-      // be reported off the back of ProbeResponse.
-      if (producedElsewhere?.decls?.has(target.declarations?.[0])) continue;
-      if (producedElsewhere) {
-        const owner = enclosingTypeName(target.declarations?.[0] ?? {});
-        if (owner && producedElsewhere.has(owner)) continue;
-      }
-
-      proven.set(target, shared);
-      changed = true;
-
-      if (!fieldWidens(target, checker, shared)) continue;
-      out.set(target, { constraint: shared, writes });
-    }
-  }
-  return out;
-}
-
 // Re-derive a guard's verdict at every write site; unanimity or nothing.
-export function verdictAcrossWrites(writes, checker, decide) {
+export function verdictAcrossWrites(writes, graph, decide) {
   let shared = null;
   for (const expr of writes) {
-    const c = guaranteeOfExpression(expr, checker);
+    const c = guaranteeOfExpression(expr, graph);
     if (!c) return null;
     const verdict = decide(c);
     if (verdict === null || verdict === "undecided") return null;

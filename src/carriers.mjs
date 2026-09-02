@@ -1,54 +1,29 @@
 // contract-fidelity: the declaration carriers besides fields.
 //
 // A field on a view model is not the only place a guarantee gets dropped.
-// The same loss happens at a local annotation, a declared return type, or a
-// cast - each is a declaration that says less than the value flowing into it:
+// The same loss happens at a parameter, a local annotation, a declared
+// return type, or a cast - each is a declaration that says less than the
+// value flowing into it:
 //
+//   function f(name: string | undefined) { ... }             // parameter
 //   const name: string | undefined = account.entity.name;   // local
 //   function f(a: AccountResponse): string | undefined {     // return type
 //     return a.entity.name;
 //   }
 //   account.entity.name as string | undefined;               // cast
 //
-// None of these needs a census: unlike a field, a local, a return position
-// and a cast each have exactly one value flowing into them at the site
-// itself, so the constraint is decided there and nowhere else.
+// A parameter, a local and a return slot are nodes of the graph, so their
+// value is the join of everything that reaches them, across any number of
+// calls and copies. A cast and a collection literal have exactly one value
+// flowing into them at the site itself, so they are decided there, against
+// the same graph.
 
 import ts from "typescript";
 import { guaranteeOfExpression } from "./census.mjs";
 import { typeDropsConstraint } from "./fields.mjs";
 import { widensAwayFrom } from "./analyze.mjs";
-import { guaranteeAcrossCallSites } from "./census.mjs";
-import { getConfig } from "./program.mjs";
+import { isGuarantee, sourceOf } from "./graph.mjs";
 
-function widened(expr, typeNode, checker) {
-  if (!expr || !typeNode) return null;
-  const constraint = guaranteeOfExpression(sourceOf(expr), checker);
-  if (!constraint) return null;
-  const type = checker.getTypeAtLocation(typeNode);
-  if (!typeDropsConstraint(type, checker, constraint)) return null;
-  return constraint;
-}
-
-// `x as unknown as T` is the shape people reach for when the compiler
-// objects. The intermediate hop states nothing, so reading the type at the
-// outer cast finds `unknown` and the laundering hides behind its own
-// mechanism. Look through it to the value that actually flows in.
-function sourceOf(expr) {
-  let node = expr;
-  while (
-    (ts.isAsExpression(node) || ts.isTypeAssertionExpression(node)) &&
-    (node.type.kind === ts.SyntaxKind.UnknownKeyword ||
-      node.type.kind === ts.SyntaxKind.AnyKeyword)
-  ) {
-    node = node.expression;
-  }
-  return node;
-}
-
-// A `let` annotated wider than its initialiser may be doing real work: the
-// wider type is there for a later assignment. Only a `const` proves the
-// declared type is the whole story.
 function isConstDeclaration(node) {
   const list = node.parent;
   return (
@@ -58,84 +33,64 @@ function isConstDeclaration(node) {
   );
 }
 
-// Every `return` an arrow/function body can produce, without descending into
-// nested functions (their returns belong to them).
-function returnExpressions(fn) {
-  if (!fn.body) return [];
-  if (!ts.isBlock(fn.body)) return [fn.body]; // concise arrow body
-  const out = [];
-  const visit = (node) => {
-    if (
-      ts.isFunctionDeclaration(node) ||
-      ts.isFunctionExpression(node) ||
-      ts.isArrowFunction(node)
-    ) {
-      return;
-    }
-    if (ts.isReturnStatement(node) && node.expression)
-      out.push(node.expression);
-    ts.forEachChild(node, visit);
-  };
-  ts.forEachChild(fn.body, visit);
-  return out;
+function functionName(fn) {
+  return fn.name?.getText() ?? "(anonymous)";
 }
 
-export function findWidenedDeclarations(program, checker, isScanned) {
+export function findWidenedDeclarations(graph, isScanned) {
+  const { checker } = graph;
   const found = [];
 
-  for (const sf of program.getSourceFiles()) {
+  // const name: string | undefined = account.entity.name;
+  //
+  // A `let` annotated wider than its initialiser may be doing real work: the
+  // wider type is there for a later assignment. Only a `const` is a node.
+  for (const node of graph.consts()) {
+    const decl = node.decl;
+    if (!decl.type || !isScanned(decl.getSourceFile())) continue;
+    const constraint = graph.valueOf(node);
+    if (!isGuarantee(constraint)) continue;
+    const type = checker.getTypeAtLocation(decl.type);
+    if (!typeDropsConstraint(type, checker, constraint)) continue;
+    found.push({
+      node: decl,
+      carrier: "local",
+      text: `${decl.name.text}: ${decl.type.getText()}`,
+      source: node.edges[0].expr,
+      constraint,
+    });
+  }
+
+  // function f(...): string | undefined { return account.entity.name }
+  //
+  // The slot's value is the join of every `return`: one that carries no
+  // guarantee, a bare `return`, or a body that can fall off the end leaves
+  // the wider type doing real work. An async slot holds the awaited value,
+  // and is judged against the type inside the Promise.
+  for (const node of graph.returns()) {
+    const fn = node.decl;
+    if (!fn.type || !isScanned(fn.getSourceFile())) continue;
+    const constraint = graph.valueOf(node);
+    if (!isGuarantee(constraint)) continue;
+    const declared = graph.declaredTypeOf(node);
+    if (!declared || !typeDropsConstraint(declared, checker, constraint)) {
+      continue;
+    }
+    found.push({
+      node: fn.type,
+      carrier: "return type",
+      text: `${functionName(fn)}(): ${fn.type.getText()}`,
+      source: node.edges[0].expr,
+      constraint,
+      // The edit is inside the Promise, so the suggestion says so.
+      wrapSuggestion: node.async ? (t) => `Promise<${t}>` : null,
+    });
+  }
+
+  for (const sf of graph.program.getSourceFiles()) {
     if (!isScanned(sf)) continue;
 
     const visit = (node) => {
-      // const name: string | undefined = account.entity.name;
-      if (
-        ts.isVariableDeclaration(node) &&
-        node.type &&
-        node.initializer &&
-        ts.isIdentifier(node.name) &&
-        isConstDeclaration(node)
-      ) {
-        const constraint = widened(node.initializer, node.type, checker);
-        if (constraint) {
-          found.push({
-            node,
-            carrier: "local",
-            text: `${node.name.text}: ${node.type.getText()}`,
-            source: node.initializer,
-            constraint,
-          });
-        }
-      }
-
-      // function f(...): string | undefined { return account.entity.name }
-      if (
-        (ts.isFunctionDeclaration(node) ||
-          ts.isFunctionExpression(node) ||
-          ts.isArrowFunction(node) ||
-          ts.isMethodDeclaration(node)) &&
-        node.type
-      ) {
-        const returns = returnExpressions(node);
-        // Every return must carry the same guarantee: one that does not means
-        // the wider type is doing real work.
-        if (returns.length > 0) {
-          const constraints = returns.map((r) =>
-            widened(r, node.type, checker),
-          );
-          const kinds = new Set(constraints.map((c) => c?.kind ?? null));
-          if (!kinds.has(null) && kinds.size === 1) {
-            const name = node.name?.getText() ?? "(anonymous)";
-            found.push({
-              node: node.type,
-              carrier: "return type",
-              text: `${name}(): ${node.type.getText()}`,
-              source: returns[0],
-              constraint: constraints[0],
-            });
-          }
-        }
-      }
-
       // A collection whose ELEMENT type is wider than what goes into it:
       //   const names: (string | null)[] = [account.entity.name];
       //   const byId: Record<string, string | undefined> = { x: a.entity.name };
@@ -160,7 +115,7 @@ export function findWidenedDeclarations(program, checker, isScanned) {
               .map((prop) => prop.initializer);
         if (elementType && elements.length > 0) {
           const constraints = elements.map((el) =>
-            guaranteeOfExpression(sourceOf(el), checker),
+            guaranteeOfExpression(sourceOf(el), graph),
           );
           const kinds = new Set(constraints.map((c) => c?.kind ?? null));
           if (
@@ -191,14 +146,16 @@ export function findWidenedDeclarations(program, checker, isScanned) {
         (node.type.kind === ts.SyntaxKind.UnknownKeyword ||
           node.type.kind === ts.SyntaxKind.AnyKeyword);
       if (ts.isAsExpression(node) && !isIntermediateHop) {
-        const constraint = widened(node.expression, node.type, checker);
-        if (constraint) {
+        const source = sourceOf(node.expression);
+        const constraint = guaranteeOfExpression(source, graph);
+        const type = checker.getTypeAtLocation(node.type);
+        if (constraint && typeDropsConstraint(type, checker, constraint)) {
           found.push({
             node,
             carrier: "cast",
             text: node.getText().replace(/\s+/g, " ").slice(0, 60),
             // The value that really flows in, not the `as unknown` hop.
-            source: sourceOf(node.expression),
+            source,
             constraint,
           });
         }
@@ -212,84 +169,39 @@ export function findWidenedDeclarations(program, checker, isScanned) {
   return found;
 }
 
-const FUNCTION_LIKE = new Set([
-  ts.SyntaxKind.FunctionDeclaration,
-  ts.SyntaxKind.FunctionExpression,
-  ts.SyntaxKind.ArrowFunction,
-  ts.SyntaxKind.MethodDeclaration,
-]);
-
-// Is this function reachable from outside the program we can see?
-//
-// Under `closedWorld` the callers in this program are all the callers there
-// are, so an export with a unanimous census is proven like any other
-// function. A library cannot assume that: its exports are called by code
-// this program will never index, and an empty or partial census there proves
-// nothing at all.
-function isExported(fn) {
-  for (let node = fn; node; node = node.parent) {
-    const modifiers = ts.canHaveModifiers?.(node)
-      ? ts.getModifiers(node)
-      : node.modifiers;
-    if (
-      modifiers?.some((m) => m.kind === ts.SyntaxKind.ExportKeyword) ||
-      (ts.isExportAssignment(node) ?? false)
-    ) {
-      return true;
-    }
-    if (ts.isSourceFile(node)) return false;
-  }
-  return false;
-}
-
 // A parameter declared wider than every value its callers hand it.
 //
 // The guard analysis reports a parameter only once somebody has written the
 // dead check on it. The widening is falsifiable before that, against the
 // census alone, and reporting it then is what stops the check being written.
-export function findWidenedParameters(program, checker, census, isScanned) {
-  const closedWorld = getConfig().closedWorld;
+export function findWidenedParameters(graph, isScanned) {
+  const { checker } = graph;
   const found = [];
-
-  for (const sf of program.getSourceFiles()) {
-    if (!isScanned(sf)) continue;
-
-    const visit = (node) => {
-      if (FUNCTION_LIKE.has(node.kind) && node.parameters) {
-        if (closedWorld || !isExported(node)) {
-          for (const param of node.parameters) {
-            // No annotation means nothing was widened: the inferred type is
-            // whatever was passed.
-            if (!param.type || !ts.isIdentifier(param.name)) continue;
-            const proven = guaranteeAcrossCallSites(param, census, checker);
-            if (!proven) continue;
-            const { constraint, example, callSites } = proven;
-            // A doc-stated guarantee - `must be > 0`, `1-31`, `non-empty` -
-            // has no narrower TypeScript type to move to, so a finding here
-            // would demand an edit that does not exist. `dead-code` still
-            // enforces those, where a dead guard proves the loss did harm.
-            if (
-              constraint.kind !== "required-non-null" &&
-              constraint.kind !== "enum-member"
-            ) {
-              continue;
-            }
-            if (!widensAwayFrom(param, constraint, checker)) continue;
-            const name = node.name?.getText() ?? "(anonymous)";
-            found.push({
-              node: param,
-              carrier: "parameter",
-              text: `${name}(${param.name.text}: ${param.type.getText()}) - ${callSites} call site(s)`,
-              source: example,
-              constraint,
-            });
-          }
-        }
-      }
-      ts.forEachChild(node, visit);
-    };
-    ts.forEachChild(sf, visit);
+  for (const node of graph.parameters()) {
+    const param = node.decl;
+    if (!isScanned(param.getSourceFile())) continue;
+    const constraint = graph.valueOf(node);
+    if (!isGuarantee(constraint)) continue;
+    // A doc-stated guarantee - `must be > 0`, `1-31`, `non-empty` - has no
+    // narrower TypeScript type to move to, so a finding here would demand an
+    // edit that does not exist. `dead-code` still enforces those, where a
+    // dead guard proves the loss did harm.
+    if (
+      constraint.kind !== "required-non-null" &&
+      constraint.kind !== "enum-member"
+    ) {
+      continue;
+    }
+    if (!widensAwayFrom(param, constraint, checker)) continue;
+    found.push({
+      node: param,
+      carrier: "parameter",
+      text: `${functionName(param.parent)}(${param.name.text}: ${param.type.getText()}) - ${node.calls} call site(s)`,
+      // A real call rather than the declaration, which tells a reader
+      // nothing they cannot already see.
+      source: node.edges[0].expr,
+      constraint,
+    });
   }
-
   return found;
 }

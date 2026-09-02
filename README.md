@@ -244,20 +244,38 @@ dead check first is to report the disease only after it has made a symptom.
 | Cast | `account.entity.name as string \| undefined` |
 | Collection element | `const names: (string \| null)[] = [account.entity.name]` |
 
-Field constraints resolve to a fixed point, because a guarantee survives a
-copy.
-A view-model field can take its value from another view-model field.
-When every write into that second field is contract-constrained, the first
-field still carries the guarantee.
-A single pass resolves such a write to a local field, not to a client property,
-and then skips the field in silence.
-That is how one real field was missed.
-It surfaced only when a narrowed source broke the typecheck.
+A guarantee survives a copy, so the tool resolves every declaration together,
+to a fixed point over the whole program.
+Every parameter, owned field, `const` local, destructured binding and return
+slot is a node.
+Every value flow into one of them is an edge: a call argument, a field write,
+a return expression, an initialiser, a destructuring read.
+A node holds the join of what reaches it, from a lattice of height two:
+unproven, a guarantee, or nothing observed.
+Two different guarantees join to unproven.
+
+That is what makes the chain visible in one run.
+A dispatcher `execute(args: Record<string, unknown> | null)` called only with
+present arguments is a widening.
+Each handler it passes `args` on to is the same widening, one hop further.
+A one-hop census reads `args` at the dispatch site through its declared type
+and stops; the graph carries the dispatcher's proof into every handler.
+
+One rule keeps that sound.
+A node's value is a fact about its declaration, and the checker's type at a
+reference can differ from it: `o?.f` is wider, `x` after a guard is narrower,
+and `x` in an exhausted `switch` is `never`.
+An edge through a reference uses the declaration's proof only when the
+checker's type at the reference is mutually assignable with the declared type.
+Any other reference contributes what its own type states, or nothing.
+A `never` reference is unreachable and contributes nothing at all.
 
 A shape excluded as produced-outside-literals proves nothing.
 Its census is incomplete.
 To let it seed the fixed point would launder a guarantee it never had into
 every field downstream.
+A parameter nobody calls, a slot no `return` fills, and a value passed on
+from either prove nothing for the same reason.
 
 ## What counts as a guarantee
 
@@ -394,8 +412,9 @@ A census made only of test-file writers proves nothing about production.
   present` guarantees nothing. Neither does `Non-empty means the event is
   excluded from matching`, which states an implication. The tool reads both as
   "no constraint".
-- More than one call hop. The tool proves a parameter against its direct
-  callers. It does not follow a value into a second call.
+- A body that can fall off its end, or a `return` with no value. The slot
+  then holds `undefined` on a path no edge names, and the tool does not prove
+  it.
 - Library parameters. A widened signature in `node_modules` is not yours to
   fix.
 
@@ -527,10 +546,11 @@ That handoff is the point.
 | --- | --- |
 | `src/constraints.mjs` | What "narrow" means. Every always-true and always-false decision. Pure. |
 | `src/contract.mjs` | Reads a guarantee off a client symbol. |
-| `src/census.mjs` | The call-site census behind a parameter finding. |
+| `src/census.mjs` | The call-site census, and the guarantee readers. |
 | `src/fields.mjs` | The write census behind a view-model finding and a props finding. |
+| `src/graph.mjs` | The whole-program value graph, its lattice, and the fixed point. |
 | `src/analyze.mjs` | Guard shapes, and the flow between them. |
-| `src/carriers.mjs` | Locals, return types, casts and collection elements. |
+| `src/carriers.mjs` | Parameters, locals, return types, casts and collection elements. |
 | `src/program.mjs` | The shared TypeScript program, and the file-scope rules. |
 | `src/config.mjs` | Configuration load and validation. |
 | `src/ratchet.mjs` | The down-only baseline. |

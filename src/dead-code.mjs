@@ -35,17 +35,9 @@ import {
   contractPathFor,
   countContractGuarantees,
 } from "./contract.mjs";
-import {
-  buildCallCensus,
-  constraintOfExpression,
-  verdictAcrossCallSites,
-} from "./census.mjs";
-import {
-  buildFieldWriteIndex,
-  constrainedFields,
-  typesProducedOutsideLiterals,
-  verdictAcrossWrites,
-} from "./fields.mjs";
+import { constraintOfExpression, verdictAcrossCallSites } from "./census.mjs";
+import { verdictAcrossWrites } from "./fields.mjs";
+import { buildGraph, constrainedFields } from "./graph.mjs";
 import {
   classifyGuard,
   referencesTo,
@@ -186,7 +178,8 @@ function collectInScope(sf, checker, rootDir, findings) {
 
 // Every parameter that ever receives a contract-constrained argument, with
 // the argument expressions that reach it.
-function candidateParameters(program, checker, isScanned) {
+function candidateParameters(graph, isScanned) {
+  const { program, checker } = graph;
   const candidates = new Map();
   for (const sf of program.getSourceFiles()) {
     if (!isScanned(sf)) continue;
@@ -194,7 +187,7 @@ function candidateParameters(program, checker, isScanned) {
       if (ts.isCallExpression(node)) {
         const sig = checker.getResolvedSignature(node);
         node.arguments.forEach((arg, i) => {
-          const constraint = constraintOfExpression(arg, checker);
+          const constraint = constraintOfExpression(arg, graph);
           if (!constraint) return;
           const paramSymbol = sig?.parameters?.[i];
           const paramDecl = paramSymbol?.valueDeclaration;
@@ -215,19 +208,9 @@ function candidateParameters(program, checker, isScanned) {
   return candidates;
 }
 
-function collectAcrossCalls(
-  program,
-  checker,
-  census,
-  isScanned,
-  rootDir,
-  findings,
-) {
-  for (const [paramDecl, info] of candidateParameters(
-    program,
-    checker,
-    isScanned,
-  )) {
+function collectAcrossCalls(graph, isScanned, rootDir, findings) {
+  const { checker } = graph;
+  for (const [paramDecl, info] of candidateParameters(graph, isScanned)) {
     const { paramSymbol, constraint, origins } = info;
     const body = paramDecl.parent.body;
     const widening = widenNote(paramDecl, rootDir);
@@ -237,7 +220,7 @@ function collectAcrossCalls(
       if (!guard) continue;
 
       // Prove it against every caller, not just the one that led us here.
-      const shared = verdictAcrossCallSites(paramDecl, census, checker, (c) => {
+      const shared = verdictAcrossCallSites(paramDecl, graph, (c) => {
         const g = classifyGuard(ref, c, checker);
         return g ? g.verdict : null;
       });
@@ -292,32 +275,9 @@ function fieldWidenNote(target, checker, rootDir) {
   };
 }
 
-function collectAcrossFields(
-  program,
-  checker,
-  census,
-  isScanned,
-  rootDir,
-  findings,
-) {
-  const index = buildFieldWriteIndex(
-    program,
-    checker,
-    (sf) => isScannedPath(sf.fileName, rootDir),
-    rootDir,
-    census.valueReferenced,
-  );
-  // The same exclusion `widening` applies: a shape that is cast, parsed or
-  // awaited holds values this census never saw, so it proves nothing. This
-  // scanner was calling constrainedFields WITHOUT it, which is how a guard on
-  // a localStorage settings field - `parsed.enabledIndicators ?? []`, whose
-  // whole job is legacy records - came to be reported as always-true.
-  const producedElsewhere = typesProducedOutsideLiterals(
-    program,
-    checker,
-    (sf) => isScannedPath(sf.fileName, rootDir),
-  );
-  const fields = constrainedFields(index, checker, rootDir, producedElsewhere);
+function collectAcrossFields(graph, isScanned, rootDir, findings) {
+  const { program, checker } = graph;
+  const fields = constrainedFields(graph);
   if (fields.size === 0) return;
 
   for (const sf of program.getSourceFiles()) {
@@ -330,7 +290,7 @@ function collectAcrossFields(
         if (info) {
           const guard = classifyGuard(node, info.constraint, checker);
           if (guard) {
-            const shared = verdictAcrossWrites(info.writes, checker, (c) => {
+            const shared = verdictAcrossWrites(info.writes, graph, (c) => {
               const g = classifyGuard(node, c, checker);
               return g ? g.verdict : null;
             });
@@ -386,17 +346,20 @@ export function analyzeProgram(
   const isScanned = (sourceFile) => isScannedFile(sourceFile, rootDir);
   const findings = [];
 
-  // The census spans test files too - see census.mjs.
-  const census = buildCallCensus(program, checker, (sf) =>
-    isScannedPath(sf.fileName, rootDir),
-  );
+  // The graph spans test files too - see census.mjs. The same exclusions
+  // `widening` applies hold here: a shape that is cast, parsed or awaited
+  // holds values the census never saw, so it proves nothing.
+  const graph = buildGraph(program, checker, {
+    rootDir,
+    isCandidateFile: (sf) => isScannedPath(sf.fileName, rootDir),
+  });
 
   for (const sf of program.getSourceFiles()) {
     if (!isScanned(sf)) continue;
     collectInScope(sf, checker, rootDir, findings);
   }
-  collectAcrossCalls(program, checker, census, isScanned, rootDir, findings);
-  collectAcrossFields(program, checker, census, isScanned, rootDir, findings);
+  collectAcrossCalls(graph, isScanned, rootDir, findings);
+  collectAcrossFields(graph, isScanned, rootDir, findings);
 
   const all = dedupe(findings);
   return excludeBoundaryChecks ? all.filter((f) => !isBoundaryCheck(f)) : all;
