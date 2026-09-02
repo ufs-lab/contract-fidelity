@@ -290,38 +290,56 @@ export function buildFieldWriteIndex(
   // source field is optional, nullable, or absent can be absent too, and the
   // only sound answer is to disqualify it.
   //
-  // `suppliedAfter` holds the names written AFTER the spread in the same
-  // literal, which the spread cannot reach: `{ ...row, name: "x" }` supplies
-  // `name` whatever `row` holds.
-  const disqualifyFromSpread = (targetShape, sourceExpr, suppliedAfter) => {
+  // `suppliedBefore` and `suppliedAfter` hold the names written plainly on
+  // either side of the spread in the same literal. A later write wins
+  // whatever the spread held: `{ ...row, name: "x" }` supplies `name`. An
+  // earlier write survives a spread whose source has no such property:
+  // `{ tone, ...gridProps }` keeps `tone` when nothing in `gridProps` can
+  // override it, and only a source that HAS the property, optional or
+  // nullable, can put "absent" over it.
+  //
+  // A union source is judged member by member. `getPropertyOfType` on a
+  // union returns only the properties common to every member, so a field
+  // one branch lacks would read as "no such property" for the whole union,
+  // and the branch that omits it would never be counted.
+  const disqualifyFromSpread = (
+    targetShape,
+    sourceExpr,
+    suppliedBefore,
+    suppliedAfter,
+  ) => {
     const sourceType = checker.getTypeAtLocation(sourceExpr);
+    // `{ ...state, count: n }` spreads a type into itself. Every field
+    // joins with itself, so nothing new arrives and nothing is disproven.
+    //
+    // That exemption is about the TYPE, not the property. A property-level
+    // test - same declaration, same optionality - exempted a Partial-typed
+    // object built from the props: every property of a Partial keeps the
+    // props field's declaration, and for an already-optional prop the
+    // optionality matches too. Only a source whose type IS the target type
+    // is a self-spread.
+    if (sourceType?.symbol && sourceType.symbol === targetShape.symbol) return;
+    const members = sourceType
+      ? sourceType.isUnion()
+        ? sourceType.types
+        : [sourceType]
+      : [];
+    const optional = (prop) => (prop.flags & ts.SymbolFlags.Optional) !== 0;
     for (const targetProp of checker.getPropertiesOfType(targetShape)) {
       const name = targetProp.getName();
       if (suppliedAfter.has(name)) continue;
       if (!isOwnedField(targetProp, rootDir)) continue;
-      const sourceProp = sourceType
-        ? checker.getPropertyOfType(sourceType, name)
-        : null;
-      const optional = (prop) => (prop.flags & ts.SymbolFlags.Optional) !== 0;
-      // `{ ...state, count: n }` spreads a type into itself. Every field
-      // joins with itself, so nothing new arrives and nothing is disproven.
-      //
-      // That exemption is about the TYPE, not the property. A property-level
-      // test - same declaration, same optionality - exempted a Partial-typed
-      // object built from the props: every property of a Partial keeps the
-      // props field's declaration, and for an already-optional prop the
-      // optionality matches too. Only a source whose type IS the target type
-      // is a self-spread.
-      if (sourceType?.symbol && sourceType.symbol === targetShape.symbol) {
-        continue;
-      }
-      const unsafe =
-        !sourceProp ||
-        optional(sourceProp) ||
-        dropsGuarantee(
-          checker.getTypeOfSymbolAtLocation(sourceProp, sourceExpr),
-          checker,
+      const unsafe = members.some((member) => {
+        const sourceProp = checker.getPropertyOfType(member, name);
+        if (!sourceProp) return !suppliedBefore.has(name);
+        return (
+          optional(sourceProp) ||
+          dropsGuarantee(
+            checker.getTypeOfSymbolAtLocation(sourceProp, sourceExpr),
+            checker,
+          )
         );
+      });
       if (unsafe) entry(targetProp).disqualified = true;
     }
   };
@@ -332,6 +350,16 @@ export function buildFieldWriteIndex(
     (ts.isIdentifier(prop.name) || ts.isStringLiteralLike(prop.name))
       ? prop.name.text
       : null;
+
+  // The names a spread may supply: every property of its source type.
+  // Whether each one is guaranteed is the spread rule's question; the
+  // omission rule only needs to know the literal did not leave it out. Before
+  // this `{ ...props }` counted as omitting every optional field of the
+  // target, so the self-spread exemption above was never reached.
+  const spreadSupplies = (expr) =>
+    checker
+      .getPropertiesOfType(checker.getTypeAtLocation(expr))
+      .map((p) => p.getName());
 
   // A string key that names one field. `o[k] = e` with a computed key names
   // no field, and is handled as a write the census cannot read.
@@ -386,9 +414,11 @@ export function buildFieldWriteIndex(
           // The call census has always applied this rule: an omitted argument
           // means unproven. This is the same rule, for the same reason.
           const supplied = new Set(
-            node.properties
-              .map(writtenName)
-              .filter((name) => name !== null),
+            node.properties.flatMap((prop) =>
+              ts.isSpreadAssignment(prop)
+                ? spreadSupplies(prop.expression)
+                : [writtenName(prop)],
+            ).filter((name) => name !== null),
           );
           for (const candidate of checker.getPropertiesOfType(contextual)) {
             const optional =
@@ -403,13 +433,14 @@ export function buildFieldWriteIndex(
           }
           node.properties.forEach((prop, at) => {
             if (ts.isSpreadAssignment(prop)) {
-              const after = new Set(
-                node.properties
-                  .slice(at + 1)
-                  .map(writtenName)
-                  .filter((name) => name !== null),
+              const names = (props) =>
+                new Set(props.map(writtenName).filter((name) => name !== null));
+              disqualifyFromSpread(
+                contextual,
+                prop.expression,
+                names(node.properties.slice(0, at)),
+                names(node.properties.slice(at + 1)),
               );
-              disqualifyFromSpread(contextual, prop.expression, after);
               return;
             }
             const name = writtenName(prop);
@@ -449,7 +480,11 @@ export function buildFieldWriteIndex(
             : null;
         if (propsType) {
           const supplied = new Set(
-            attributes.map(attributeName).filter((name) => name !== null),
+            attributes.flatMap((attr) =>
+              ts.isJsxSpreadAttribute(attr)
+                ? spreadSupplies(attr.expression)
+                : [attributeName(attr)],
+            ).filter((name) => name !== null),
           );
           for (const shape of objectMembers(propsType)) {
             for (const candidate of checker.getPropertiesOfType(shape)) {
@@ -465,15 +500,15 @@ export function buildFieldWriteIndex(
 
           attributes.forEach((attr, at) => {
             if (ts.isJsxSpreadAttribute(attr)) {
-              // A later attribute overrides the spread: `<C {...p} x={1} />`.
-              const after = new Set(
-                attributes
-                  .slice(at + 1)
-                  .map(attributeName)
-                  .filter((name) => name !== null),
-              );
+              const names = (attrs) =>
+                new Set(attrs.map(attributeName).filter((name) => name !== null));
               for (const shape of objectMembers(propsType)) {
-                disqualifyFromSpread(shape, attr.expression, after);
+                disqualifyFromSpread(
+                  shape,
+                  attr.expression,
+                  names(attributes.slice(0, at)),
+                  names(attributes.slice(at + 1)),
+                );
               }
               return;
             }

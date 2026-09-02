@@ -180,6 +180,19 @@ export function constraintOfExpression(expr, checker, depth = 0) {
   return null;
 }
 
+// The checker's type for a value, as written.
+//
+// A JSX string attribute is the one expression the checker leaves untyped:
+// `getTypeAtLocation` on the `"dark"` in `tone="dark"` is `any`, and a
+// census that took that at face value read every such write as stating
+// nothing. It is a string.
+function typeOfWrite(expr, checker) {
+  if (ts.isStringLiteral(expr) && ts.isJsxAttribute(expr.parent)) {
+    return checker.getStringType();
+  }
+  return checker.getTypeAtLocation(expr);
+}
+
 // The guarantee an expression carries, from either source.
 //
 // A contract wins when there is one: it names a field a reader can look up,
@@ -192,7 +205,7 @@ export function guaranteeOfExpression(expr, checker) {
   if (fromContract) return { ...fromContract, origin: "contract" };
   if (!getConfig().inferConstraints) return null;
   const label = expr.getText().replace(/\s+/g, " ").slice(0, 40);
-  return constraintFromType(checker.getTypeAtLocation(expr), checker, label);
+  return constraintFromType(typeOfWrite(expr, checker), checker, label);
 }
 
 // The guarantee EVERY caller supplies for `paramDecl`, or null when unproven.
