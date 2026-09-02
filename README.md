@@ -66,6 +66,9 @@ Do not use both files.
 | `baselineDir` | `.contract-fidelity` | Where the tool writes the baselines. |
 | `docPatterns` | `[]` | Extra prose patterns for your own generator. |
 
+`CONTRACT_FIDELITY_CONFIG` names a config file elsewhere than the project
+root, for a run that must not touch the shared file.
+
 `contractPackages` has no default, and the tool fails without it.
 A scan that matches no contract reports "clean" while it checks nothing.
 A value matches `node_modules/@acme/...` and pnpm's

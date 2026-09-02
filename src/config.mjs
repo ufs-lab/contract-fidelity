@@ -67,7 +67,13 @@ function readJson(path) {
 }
 
 export function loadConfig(repoRoot) {
-  const standalone = readJson(join(repoRoot, "contract-fidelity.config.json"));
+  // CONTRACT_FIDELITY_CONFIG names a config file elsewhere than the repo
+  // root, so a run can carry its own configuration without rewriting the
+  // shared file under another process's feet.
+  const standalone = readJson(
+    process.env.CONTRACT_FIDELITY_CONFIG ??
+      join(repoRoot, "contract-fidelity.config.json"),
+  );
   const pkg = readJson(join(repoRoot, "package.json"));
   const fromPkg = pkg?.contractFidelity ?? null;
 
