@@ -257,7 +257,14 @@ export function buildFieldWriteIndex(
   // member rather than through the properties they happen to share.
   const objectMembers = (type) =>
     (type.isUnion() ? type.types : [type]).filter(
-      (m) => (m.flags & ts.TypeFlags.Object) !== 0,
+      // A React component's attributes are contextually typed
+      // `IntrinsicAttributes & Props`: an INTERSECTION, which is object-like
+      // but does not carry the Object flag. Dropping it here silenced both the
+      // omission rule and the spread rule for every React.FC in the program,
+      // so an optional prop one render path omitted was proven from the path
+      // that supplied it.
+      (m) =>
+        (m.flags & (ts.TypeFlags.Object | ts.TypeFlags.Intersection)) !== 0,
     );
 
   // A write the census cannot read at all: every field of the type could now
@@ -298,14 +305,14 @@ export function buildFieldWriteIndex(
       const optional = (prop) => (prop.flags & ts.SymbolFlags.Optional) !== 0;
       // `{ ...state, count: n }` spreads a type into itself. Every field
       // joins with itself, so nothing new arrives and nothing is disproven.
-      // `{ ...defaults, ...overrides }` with `overrides: Partial<X>` is NOT
-      // that: a mapped type keeps the declaration and drops the requirement,
-      // so the field can arrive absent after all.
-      if (
-        sourceProp &&
-        keyOf(sourceProp) === keyOf(targetProp) &&
-        optional(sourceProp) === optional(targetProp)
-      ) {
+      //
+      // That exemption is about the TYPE, not the property. A property-level
+      // test - same declaration, same optionality - exempted a Partial-typed
+      // object built from the props: every property of a Partial keeps the
+      // props field's declaration, and for an already-optional prop the
+      // optionality matches too. Only a source whose type IS the target type
+      // is a self-spread.
+      if (sourceType?.symbol && sourceType.symbol === targetShape.symbol) {
         continue;
       }
       const unsafe =

@@ -411,3 +411,14 @@ test("a whole object of another type flowing into a slot is a write", () => {
   const dead = JSON.parse(run(["dead-code", "--json"]));
   assert.equal(dead.some((r) => r.guard.includes("s.v")), false);
 });
+
+test("a Partial-typed object spread into JSX can omit an optional prop", () => {
+  // Every property of Partial<Props> keeps the declaration of the props
+  // field, and an already-optional prop matches its optionality too, so a
+  // property-level self-spread test read `{...gridProps}` as the prop spread
+  // into itself and proved it from the one branch that supplied it.
+  const rows = JSON.parse(run(["widening", "--json"])).filter((r) =>
+    r.file.endsWith("unionSpread.tsx"),
+  );
+  assert.equal(rows.some((r) => r.declared.includes("depth?: number")), false);
+});
