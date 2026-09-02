@@ -50,7 +50,7 @@
 
 import ts from "typescript";
 import { constraintForClientProperty } from "./contract.mjs";
-import { constraintFromType } from "./inferred.mjs";
+import { constraintFromType, sameGuarantee } from "./inferred.mjs";
 import { getConfig, isTestFile } from "./program.mjs";
 import { buildCallCensus, directContract, typeOfWrite } from "./census.mjs";
 import {
@@ -621,38 +621,6 @@ export function constrainedFields(graph) {
     out.set(node.symbol, { constraint, writes: node.writes });
   }
   return out;
-}
-
-// Two guarantees are the same fact when a declaration narrowed to either
-// would accept every value of the other.
-export function sameGuarantee(a, b, checker) {
-  if (a.kind !== b.kind) return false;
-  if (a.kind === "enum-member") {
-    const left = new Set(a.members);
-    return (
-      b.members.length === left.size && b.members.every((m) => left.has(m))
-    );
-  }
-  if (a.kind === "required-non-null") {
-    if (a.type && b.type) {
-      if (a.type === b.type) return true;
-      if (typeof checker.isTypeAssignableTo !== "function") return false;
-      return (
-        checker.isTypeAssignableTo(a.type, b.type) &&
-        checker.isTypeAssignableTo(b.type, a.type)
-      );
-    }
-    return a.sourceType === b.sourceType;
-  }
-  if (a.interval && b.interval) {
-    return (
-      a.interval.lo === b.interval.lo &&
-      a.interval.hi === b.interval.hi &&
-      a.interval.loExclusive === b.interval.loExclusive &&
-      a.interval.hiExclusive === b.interval.hiExclusive
-    );
-  }
-  return true;
 }
 
 // Can control fall off the end of this block? A body that can returns
