@@ -39,13 +39,8 @@ import {
   isScannedFile,
 } from "./program.mjs";
 import { createRatchet } from "./ratchet.mjs";
-import {
-  buildFieldWriteIndex,
-  constrainedFields,
-  typesProducedOutsideLiterals,
-} from "./fields.mjs";
 import { countContractGuarantees } from "./contract.mjs";
-import { buildCallCensus } from "./census.mjs";
+import { buildGraph, constrainedFields } from "./graph.mjs";
 import {
   isApplicableSuggestion,
   alignSuggestion,
@@ -127,13 +122,16 @@ function whyWider(constraint) {
 // site(s)` - and reading a type out of that produced a suggestion so mangled
 // it was thrown away, silently taking every parameter and cast finding with
 // it. For those the source type IS the answer: it is what every caller passes.
-function suggestionFor(constraint, declared, isField) {
-  if (constraint.origin !== "inferred") return constraint.sourceType ?? null;
-  if (isField && constraint.kind === "required-non-null") {
-    const kept = narrowedDeclaration(declared);
-    if (kept) return kept;
-  }
-  return alignSuggestion(constraint.sourceType ?? null, declared);
+function suggestionFor(constraint, declared, isField, wrap = null) {
+  const suggested = (() => {
+    if (constraint.origin !== "inferred") return constraint.sourceType ?? null;
+    if (isField && constraint.kind === "required-non-null") {
+      const kept = narrowedDeclaration(declared);
+      if (kept) return kept;
+    }
+    return alignSuggestion(constraint.sourceType ?? null, declared);
+  })();
+  return suggested && wrap ? wrap(suggested) : suggested;
 }
 
 // A contract finding names a contract field, so a reader can go and look it
@@ -161,31 +159,13 @@ export function collectViolations() {
     );
   }
 
-  // The census spans test files too - see census.mjs. It is built first
-  // because the write census needs to know which functions are handed around
-  // as values: their parameters receive objects built where nothing can read
-  // them.
-  const census = buildCallCensus(program, checker, (sf) =>
-    isScannedPath(sf.fileName),
-  );
-  const index = buildFieldWriteIndex(
-    program,
-    checker,
-    (sf) => isScannedPath(sf.fileName),
-    REPO_ROOT,
-    census.valueReferenced,
-  );
-  const producedElsewhere = typesProducedOutsideLiterals(
-    program,
-    checker,
-    (sf) => isScannedPath(sf.fileName),
-  );
-  const fields = constrainedFields(
-    index,
-    checker,
-    REPO_ROOT,
-    producedElsewhere,
-  );
+  // The graph spans test files too - see census.mjs. A test that writes null
+  // proves a branch is reachable; a test is never a violation site.
+  const graph = buildGraph(program, checker, {
+    rootDir: REPO_ROOT,
+    isCandidateFile: (sf) => isScannedPath(sf.fileName),
+  });
+  const fields = constrainedFields(graph);
 
   const byFile = new Map();
   for (const [target, { constraint, writes }] of fields) {
@@ -237,8 +217,8 @@ export function collectViolations() {
   // somewhere other than a field.
   const isScanned = (sf) => isScannedFile(sf);
   const carriers = [
-    ...findWidenedDeclarations(program, checker, isScanned),
-    ...findWidenedParameters(program, checker, census, isScanned),
+    ...findWidenedDeclarations(graph, isScanned),
+    ...findWidenedParameters(graph, isScanned),
   ];
   for (const d of carriers) {
     const sf = d.node.getSourceFile();
@@ -252,7 +232,12 @@ export function collectViolations() {
       contractField: d.constraint.field,
       constraintKind: d.constraint.kind,
       origin: d.constraint.origin ?? "contract",
-      suggestedType: suggestionFor(d.constraint, d.text, false),
+      suggestedType: suggestionFor(
+        d.constraint,
+        d.text,
+        false,
+        d.wrapSuggestion ?? null,
+      ),
       why: whyWider(d.constraint),
       writes: [
         {

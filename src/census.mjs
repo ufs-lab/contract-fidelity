@@ -1,4 +1,4 @@
-// contract-fidelity: the call-site census.
+// contract-fidelity: the call-site census, and the guarantee readers.
 //
 // A guard inside a helper is dead only if EVERY caller hands it a value the
 // contract already constrains. `textOrDash(value: string | null | undefined)`
@@ -7,14 +7,12 @@
 // a false positive of the worst kind - the one that gets the linter switched
 // off. So every callee-side finding is proven against all known call sites,
 // and an unproven one is silently dropped.
+//
+// The census indexes the calls. The graph (graph.mjs) turns them into edges
+// and solves every parameter alongside every field, local and return slot.
 
 import ts from "typescript";
 import { constraintForClientProperty } from "./contract.mjs";
-import { constraintFromType, sameGuarantee } from "./inferred.mjs";
-import { getConfig, isTestFile } from "./program.mjs";
-
-// How far to chase an argument that is a plain local back to its initialiser.
-const ALIAS_DEPTH = 2;
 
 const FUNCTION_LIKE_KINDS = new Set([
   ts.SyntaxKind.FunctionDeclaration,
@@ -152,32 +150,11 @@ export function buildCallCensus(program, checker, isCandidateFile) {
   return { byFunction, valueReferenced };
 }
 
-// The contract constraint an argument expression carries, if any.
-export function constraintOfExpression(expr, checker, depth = 0) {
-  if (!expr) return null;
-
-  if (ts.isPropertyAccessExpression(expr)) {
-    const symbol = checker.getSymbolAtLocation(expr.name);
-    return symbol
-      ? constraintForClientProperty(symbol, checker, expr.name)
-      : null;
-  }
-
-  // A local that is just an alias for a contract field.
-  if (ts.isIdentifier(expr) && depth < ALIAS_DEPTH) {
-    const symbol = checker.getSymbolAtLocation(expr);
-    const decl = symbol?.declarations?.[0];
-    if (decl && ts.isVariableDeclaration(decl) && decl.initializer) {
-      return constraintOfExpression(decl.initializer, checker, depth + 1);
-    }
-    if (decl && ts.isBindingElement(decl)) {
-      const nameNode = decl.propertyName ?? decl.name;
-      const s = checker.getSymbolAtLocation(nameNode);
-      return s ? constraintForClientProperty(s, checker, nameNode) : null;
-    }
-  }
-
-  return null;
+// The contract a property read states about its own value, at the site.
+export function directContract(expr, checker) {
+  if (!expr || !ts.isPropertyAccessExpression(expr)) return null;
+  const symbol = checker.getSymbolAtLocation(expr.name);
+  return symbol ? constraintForClientProperty(symbol, checker, expr.name) : null;
 }
 
 // The checker's type for a value, as written.
@@ -186,85 +163,33 @@ export function constraintOfExpression(expr, checker, depth = 0) {
 // `getTypeAtLocation` on the `"dark"` in `tone="dark"` is `any`, and a
 // census that took that at face value read every such write as stating
 // nothing. It is a string.
-function typeOfWrite(expr, checker) {
+export function typeOfWrite(expr, checker) {
   if (ts.isStringLiteral(expr) && ts.isJsxAttribute(expr.parent)) {
     return checker.getStringType();
   }
   return checker.getTypeAtLocation(expr);
 }
 
-// The guarantee an expression carries, from either source.
+// The guarantee an expression carries, from either source, through the
+// solved graph.
 //
 // A contract wins when there is one: it names a field a reader can look up,
 // and it can state things no TypeScript type can. The checker's own type is
 // the fallback, and it covers the far larger case where a value was never
-// optional and somebody widened it anyway.
-export function guaranteeOfExpression(expr, checker) {
+// optional and somebody widened it anyway. A plain read of a proven
+// declaration carries that declaration's value, under the site-identity rule
+// the graph enforces.
+export function guaranteeOfExpression(expr, graph) {
   if (!expr) return null;
-  const fromContract = constraintOfExpression(expr, checker);
-  if (fromContract) return { ...fromContract, origin: "contract" };
-  if (!getConfig().inferConstraints) return null;
-  const label = expr.getText().replace(/\s+/g, " ").slice(0, 40);
-  return constraintFromType(typeOfWrite(expr, checker), checker, label);
+  return graph.guaranteeOf(expr);
 }
 
-// The guarantee EVERY caller supplies for `paramDecl`, or null when unproven.
-//
-// The same census as the guard analysis, asked a weaker question: not "is
-// some downstream check dead" but "is this parameter declared wider than
-// every value it is ever given". A widening is falsifiable on its own, and
-// waiting for someone to write the dead guard first means reporting the
-// disease only after it has produced a symptom.
-//
-// Unproven is silent, on exactly the terms the guard analysis uses:
-// no known call site, a spread, an omitted argument, or callers that
-// disagree.
-export function guaranteeAcrossCallSites(paramDecl, census, checker) {
-  const fn = paramDecl.parent;
-  const index = fn.parameters.indexOf(paramDecl);
-  if (index < 0) return null;
-
-  // A function handed to somebody else as a VALUE is called from places this
-  // census cannot read: `Object.keys(x).forEach(addScope)` calls addScope once
-  // per key, with arguments no call expression in this program names. The
-  // census then holds the direct calls only, and proving a parameter from them
-  // is proving it from a fraction of its callers. `addScope(scope?: string |
-  // null)` was reported "1 call site" three lines above the forEach that is
-  // its real caller.
-  if (census.valueReferenced.has(fn)) return null;
-
-  const calls = census.byFunction.get(fn);
-  if (!calls || calls.length === 0) return null;
-
-  // A test passes whatever the test needs. It proves a branch is REACHABLE,
-  // which is why the census reads tests at all, and it proves nothing about
-  // what production always supplies. The field census has always said so; the
-  // parameter census did not, and an overload signature whose single caller
-  // was its own `.test.ts` was reported for exactly that reason.
-  if (calls.every((call) => isTestFile(call.getSourceFile().fileName))) {
-    return null;
-  }
-
-  let shared = null;
-  let example = null;
-  for (const call of calls) {
-    if (call.arguments.some(ts.isSpreadElement)) return null;
-    const arg = call.arguments[index];
-    if (!arg) return null;
-    const constraint = guaranteeOfExpression(arg, checker);
-    if (!constraint) return null;
-    if (shared === null) {
-      shared = constraint;
-      // Kept so the finding can point at a real call rather than at the
-      // declaration, which tells a reader nothing they cannot already see.
-      example = arg;
-    } else if (!sameGuarantee(shared, constraint, checker)) {
-      // Two callers passing different unions prove only their union, and
-      // narrowing to either one would break the other.
-      return null;
-    }
-  }
-  return { constraint: shared, example, callSites: calls.length };
+// The contract guarantee alone. A `const` that copies a contract field, or a
+// binding destructured from one, carries the contract; the checker's own
+// inference does not count here.
+export function constraintOfExpression(expr, graph) {
+  if (!expr) return null;
+  return graph.contractOf(expr);
 }
 
 // Is `paramDecl`'s value constrained at EVERY call site, such that
@@ -272,12 +197,15 @@ export function guaranteeAcrossCallSites(paramDecl, census, checker) {
 //
 // Returns the shared verdict, or null when unproven - no known call sites,
 // a caller that hands over an unconstrained value, or callers that disagree.
-export function verdictAcrossCallSites(paramDecl, census, checker, decide) {
+export function verdictAcrossCallSites(paramDecl, graph, decide) {
+  const { census } = graph;
   const fn = paramDecl.parent;
   const index = fn.parameters.indexOf(paramDecl);
   if (index < 0) return null;
 
-  // Calls this census cannot enumerate - see guaranteeAcrossCallSites.
+  // A function handed to somebody else as a VALUE is called from places this
+  // census cannot read: `Object.keys(x).forEach(addScope)` calls addScope once
+  // per key, with arguments no call expression in this program names.
   if (census.valueReferenced.has(fn)) return null;
 
   const calls = census.byFunction.get(fn);
@@ -291,7 +219,7 @@ export function verdictAcrossCallSites(paramDecl, census, checker, decide) {
     // Fewer arguments than parameters: the parameter is undefined here, so
     // any nullish guard on it is genuinely live.
     if (!arg) return null;
-    const constraint = constraintOfExpression(arg, checker);
+    const constraint = constraintOfExpression(arg, graph);
     if (!constraint) return null;
     const verdict = decide(constraint);
     if (verdict === null || verdict === "undecided") return null;

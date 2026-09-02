@@ -165,6 +165,7 @@ export function constraintForClientProperty(symbol, checker, atNode) {
       kind: "enum-member",
       members,
       sourceType,
+      type,
       why: `the contract pins this to ${members.join(" | ")}`,
       source: doc.split(/(?<=[.;])\s+/)[0]?.trim() ?? "",
       field: symbol.getName(),
@@ -176,6 +177,8 @@ export function constraintForClientProperty(symbol, checker, atNode) {
     return {
       kind: "required-non-null",
       sourceType,
+      // Kept so two guarantees can be compared as types, not as strings.
+      type,
       why: "the contract declares this required and non-null",
       source: doc.split(/(?<=[.;])\s+/)[0]?.trim() ?? "",
       field: symbol.getName(),

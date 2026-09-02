@@ -262,9 +262,20 @@ export function sameGuarantee(a, b, checker) {
     return (a.members ?? []).join("|") === (b.members ?? []).join("|");
   }
   if (a.type && b.type) {
+    if (a.type === b.type) return true;
     return (
       checker.isTypeAssignableTo(a.type, b.type) &&
       checker.isTypeAssignableTo(b.type, a.type)
+    );
+  }
+  // A doc-stated guarantee is its interval: two ranges of the same kind agree
+  // only when their bounds do.
+  if (a.interval && b.interval) {
+    return (
+      a.interval.lo === b.interval.lo &&
+      a.interval.hi === b.interval.hi &&
+      a.interval.loExclusive === b.interval.loExclusive &&
+      a.interval.hiExclusive === b.interval.hiExclusive
     );
   }
   return a.sourceType === b.sourceType;
