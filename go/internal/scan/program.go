@@ -39,6 +39,10 @@ type Options struct {
 	// a test that writes an out-of-contract value proves the branch is
 	// reachable.
 	CensusTests bool
+	// InferConstraints lets the program's own types and writes supply a
+	// guarantee: a typed constant of a named string type is an enum member,
+	// a value that cannot be nil is non-null.
+	InferConstraints bool
 }
 
 // Program is a loaded consumer module plus its contract index.

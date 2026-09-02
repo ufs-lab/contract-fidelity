@@ -6,6 +6,7 @@
 package ratchet
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -65,11 +66,17 @@ func Write(path string, findings map[string][]string) error {
 		sort.Strings(sorted)
 		out[file] = sorted
 	}
-	raw, err := json.MarshalIndent(baseline{Version: FormatVersion, Findings: out}, "", "  ")
-	if err != nil {
+	// The TypeScript tool writes the same file with JSON.stringify, which
+	// leaves `<`, `>` and `&` alone; Go's default HTML escaping would make
+	// the two tools disagree on a fingerprint like `idx < 0`.
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(baseline{Version: FormatVersion, Findings: out}); err != nil {
 		return err
 	}
-	return os.WriteFile(path, append(raw, '\n'), 0o644)
+	return os.WriteFile(path, buf.Bytes(), 0o644)
 }
 
 // Entries turns findings into fingerprints per file. Two identical guards

@@ -11,6 +11,11 @@ import (
 
 func load(t *testing.T, censusTests bool) *Program {
 	t.Helper()
+	return loadWith(t, censusTests, false)
+}
+
+func loadWith(t *testing.T, censusTests, infer bool) *Program {
+	t.Helper()
 	dir, err := filepath.Abs(filepath.Join("..", "..", "testdata", "consumer"))
 	if err != nil {
 		t.Fatal(err)
@@ -22,6 +27,7 @@ func load(t *testing.T, censusTests bool) *Program {
 		TrustContract:    true,
 		ClosedWorld:      true,
 		CensusTests:      censusTests,
+		InferConstraints: infer,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -78,6 +84,7 @@ func TestDeadGuardsWithTestWriters(t *testing.T) {
 		"idx < 0 -> always-false",
 		"len(r.Items) == 0 -> always-false",
 		"m.Amount > 0 -> always-true",
+		"r.Items == nil -> always-false",
 		"status <= 599 -> always-true",
 		"status >= 400 -> always-true",
 	}
@@ -97,6 +104,7 @@ func TestDeadGuardsWithoutTestWriters(t *testing.T) {
 		"idx < 0 -> always-false",
 		"len(r.Items) == 0 -> always-false",
 		"m.Amount > 0 -> always-true",
+		"r.Items == nil -> always-false",
 		"status <= 599 -> always-true",
 		"status >= 400 -> always-true",
 		"switch v.Status { default: } -> always-false",
@@ -129,9 +137,69 @@ func TestWidenings(t *testing.T) {
 	}
 }
 
+func TestInferredConstraints(t *testing.T) {
+	// With the census counting tests, describe(nil) keeps `e == nil` live.
+	got := guards(loadWith(t, true, true))
+	for _, g := range got {
+		if strings.HasPrefix(g, "e == nil") {
+			t.Fatalf("a test passes nil: the guard is live, got %v", got)
+		}
+	}
+	got = guards(loadWith(t, false, true))
+	wantExtra := []string{
+		"e == nil -> always-false",
+		"switch r.Outcome { default: } -> always-false",
+	}
+	for _, w := range wantExtra {
+		if !contains(got, w) {
+			t.Errorf("inferred guard missing: %s in %v", w, got)
+		}
+	}
+	for _, f := range loadWith(t, false, true).DeadGuards() {
+		switch {
+		case strings.HasPrefix(f.Guard, "e == nil"):
+			if f.Origin != constraint.OriginInferred || f.Kind != constraint.KindRequiredNonNull {
+				t.Errorf("e == nil: origin %s kind %s", f.Origin, f.Kind)
+			}
+		case strings.HasPrefix(f.Guard, "switch r.Outcome"):
+			if f.Origin != constraint.OriginInferred || f.Contract != "app.outcome" {
+				t.Errorf("switch r.Outcome: origin %s contract %s", f.Origin, f.Contract)
+			}
+		case strings.HasPrefix(f.Guard, "r.Items == nil"):
+			if f.Origin != constraint.OriginContract || !f.Boundary {
+				t.Errorf("r.Items == nil: origin %s boundary %v", f.Origin, f.Boundary)
+			}
+		}
+	}
+	var widened []string
+	for _, f := range loadWith(t, false, true).Widenings() {
+		if f.Origin == constraint.OriginInferred {
+			widened = append(widened, f.Declared+": "+f.Type+" -> "+f.Suggested)
+		}
+	}
+	if !contains(widened, "report.Outcome: string -> app.outcome") {
+		t.Errorf("inferred widening missing: %v", widened)
+	}
+	// Off, the program's own types supply nothing.
+	for _, f := range load(t, false).DeadGuards() {
+		if f.Origin == constraint.OriginInferred {
+			t.Errorf("inferConstraints off still reported %s", f.Guard)
+		}
+	}
+}
+
+func contains(list []string, want string) bool {
+	for _, s := range list {
+		if s == want {
+			return true
+		}
+	}
+	return false
+}
+
 func TestBoundaryFlag(t *testing.T) {
 	for _, f := range load(t, true).DeadGuards() {
-		direct := strings.HasPrefix(f.Guard, "len(r.Items)") || strings.HasPrefix(f.Guard, "m.Amount")
+		direct := strings.HasPrefix(f.Guard, "len(r.Items)") || strings.HasPrefix(f.Guard, "m.Amount") || strings.HasPrefix(f.Guard, "r.Items == nil")
 		if f.Boundary != direct {
 			t.Errorf("%s: boundary=%v", f.Guard, f.Boundary)
 		}

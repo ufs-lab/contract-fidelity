@@ -29,7 +29,7 @@ func TestDiffIsASetNotACount(t *testing.T) {
 
 func TestWriteReadRoundTrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), ".contract-fidelity", "dead-code-baseline.json")
-	in := map[string][]string{"b.go": {"z"}, "a.go": {"y", "x"}, "empty.go": {}}
+	in := map[string][]string{"b.go": {"z"}, "a.go": {"y", "idx < 0 :: c :: k"}, "empty.go": {}}
 	if err := Write(path, in); err != nil {
 		t.Fatal(err)
 	}
@@ -37,11 +37,14 @@ func TestWriteReadRoundTrip(t *testing.T) {
 	if !strings.Contains(string(raw), `"version": 2`) || strings.Contains(string(raw), "empty.go") {
 		t.Fatalf("unexpected baseline body:\n%s", raw)
 	}
+	if !strings.Contains(string(raw), "idx < 0") {
+		t.Fatalf("the baseline must not HTML-escape a fingerprint, as JSON.stringify does not:\n%s", raw)
+	}
 	out, err := Read(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(out) != 2 || out["a.go"][0] != "x" {
+	if len(out) != 2 || out["a.go"][0] != "idx < 0 :: c :: k" {
 		t.Fatalf("round trip lost order or files: %v", out)
 	}
 }

@@ -237,8 +237,27 @@ func buildField(pkg *packages.Package, owner *types.TypeName, v *types.Var, tag,
 	if named, ok := t.(*types.Named); ok && strings.HasPrefix(named.Obj().Name(), "Nullable") {
 		isNullable = true
 	}
+	var prop *openapi.Property
+	if spec != nil {
+		if p, ok := spec.Property(owner.Name(), jsonName); ok {
+			prop = &p
+		}
+	}
+
 	switch t.Underlying().(type) {
-	case *types.Pointer, *types.Slice, *types.Map, *types.Interface, *types.Signature, *types.Chan:
+	case *types.Slice, *types.Map:
+		// The generated decode admits null for a required array or map, so
+		// the Go shape alone proves nothing; the spec does. A required
+		// property that is not nullable is non-null.
+		if !omitempty && prop != nil && !prop.Nullable {
+			f.Required = true
+			f.Guarantees = append(f.Guarantees, constraint.Guarantee{
+				Kind:     constraint.KindRequiredNonNull,
+				Why:      "the contract requires the field and does not allow null",
+				Evidence: "required, not nullable",
+			})
+		}
+	case *types.Pointer, *types.Interface, *types.Signature, *types.Chan:
 		// nil is a legal decode of all of these, so none is non-null.
 	default:
 		if !isPtr && !isNullable && !omitempty {
@@ -251,13 +270,6 @@ func buildField(pkg *packages.Package, owner *types.TypeName, v *types.Var, tag,
 		}
 	}
 	f.Optional = isPtr && omitempty
-
-	var prop *openapi.Property
-	if spec != nil {
-		if p, ok := spec.Property(owner.Name(), jsonName); ok {
-			prop = &p
-		}
-	}
 
 	elem := t
 	if p, ok := t.(*types.Pointer); ok {
@@ -301,6 +313,9 @@ func buildField(pkg *packages.Package, owner *types.TypeName, v *types.Var, tag,
 			f.Guarantees = append(f.Guarantees, g)
 		}
 	}
+	for i := range f.Guarantees {
+		f.Guarantees[i].Origin = constraint.OriginContract
+	}
 	f.Guarantees = constraint.Dedupe(f.Guarantees)
 	return f
 }
@@ -312,6 +327,7 @@ func enumGuarantee(e *Enum) constraint.Guarantee {
 		EnumType: e.PkgName + "." + e.Type,
 		Why:      "the contract decodes only " + strings.Join(e.Members, " | "),
 		Evidence: e.PkgName + "." + e.Type,
+		Origin:   constraint.OriginContract,
 	}
 }
 

@@ -129,3 +129,57 @@ func (r registry) lookup(name string) bool {
 
 var _ = newRegistry
 var _ = registry.lookup
+
+// itemsNil guards a required, non-nullable array the spec makes non-null.
+func itemsNil(r client.BatchResult) bool {
+	return r.Items == nil
+}
+
+// outcome is the program's own closed vocabulary: no contract, but every
+// write into report.Outcome is one of its constants.
+type outcome string
+
+const (
+	outcomeOK   outcome = "ok"
+	outcomeFail outcome = "fail"
+)
+
+type report struct {
+	Outcome string
+}
+
+func mkReport(good bool) report {
+	if good {
+		return report{Outcome: string(outcomeOK)}
+	}
+	return report{Outcome: string(outcomeFail)}
+}
+
+func render(r report) string {
+	switch r.Outcome {
+	case "ok":
+		return "+"
+	case "fail":
+		return "-"
+	default:
+		return "?"
+	}
+}
+
+// describe is called with an address from production and with nil from a
+// test, so its nil guard is live only while the census counts tests.
+func describe(e *viewErr) string {
+	if e == nil {
+		return ""
+	}
+	return e.Type
+}
+
+func callDescribe(v viewErr) string {
+	return describe(&v)
+}
+
+var _ = itemsNil
+var _ = mkReport
+var _ = render
+var _ = callDescribe

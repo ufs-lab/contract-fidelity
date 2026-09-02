@@ -3,6 +3,7 @@ package scan
 import (
 	"go/ast"
 	"go/constant"
+	"go/token"
 	"go/types"
 	"strings"
 
@@ -19,8 +20,9 @@ type value struct {
 	// ok is false when the value is unknown: an unaccounted writer, a call
 	// the census cannot follow, an operation the analyzer does not model.
 	ok bool
-	// fromContract is true when at least one contract read feeds the value.
-	fromContract bool
+	// origin is the strongest source feeding the value: contract, inferred,
+	// or empty for a literal or a zero value.
+	origin string
 	// direct is true when the expression IS a contract read, with no
 	// carrier between the two.
 	direct  bool
@@ -41,8 +43,23 @@ func (p *Program) valueOf(pkg *packages.Package, e ast.Expr, depth int) value {
 		return unknown
 	}
 	info := pkg.TypesInfo
-	if tv, ok := info.Types[e]; ok && tv.Value != nil {
-		return constantValue(tv, p.nodeText(pkg, e))
+	if tv, ok := info.Types[e]; ok {
+		if tv.Value != nil {
+			// `string(outcomeOK)` is itself a constant, of type string; the
+			// named type that makes it an enum member is on the argument.
+			if call, isCall := e.(*ast.CallExpr); isCall && len(call.Args) == 1 {
+				if ftv, ok := info.Types[call.Fun]; ok && ftv.IsType() {
+					if atv, ok := info.Types[call.Args[0]]; ok && atv.Value != nil {
+						return convert(p.constantValue(pkg, atv, p.nodeText(pkg, call.Args[0])), tv.Type)
+					}
+				}
+			}
+			return p.constantValue(pkg, tv, p.nodeText(pkg, e))
+		}
+		if tv.IsNil() {
+			// nil is a known write that carries nothing.
+			return known(nil)
+		}
 	}
 	switch e := e.(type) {
 	case *ast.ParenExpr:
@@ -55,11 +72,32 @@ func (p *Program) valueOf(pkg *packages.Package, e ast.Expr, depth int) value {
 		return p.callValue(pkg, e, depth)
 	case *ast.IndexExpr:
 		return p.indexValue(pkg, e)
+	case *ast.UnaryExpr:
+		if e.Op == token.AND {
+			return p.nonNull("the address of a value")
+		}
+	case *ast.CompositeLit, *ast.FuncLit:
+		return p.nonNull("a literal")
 	}
 	return unknown
 }
 
-func constantValue(tv types.TypeAndValue, text string) value {
+// nonNull is the value of an expression that cannot be nil: an address, a
+// literal, a make or new. The census supplies it, so its origin is inferred.
+func (p *Program) nonNull(why string) value {
+	g := constraint.Guarantee{Kind: constraint.KindRequiredNonNull, Why: why, Evidence: why}
+	v := known([]constraint.Guarantee{g})
+	if p.opts.InferConstraints {
+		v.gs[0].Origin = constraint.OriginInferred
+		v.origin = constraint.OriginInferred
+	}
+	return v
+}
+
+// constantValue is the value of a literal or a named constant. A constant
+// of a named string type declared in the program is an inferred enum
+// member of that type: the census then knows every member written.
+func (p *Program) constantValue(pkg *packages.Package, tv types.TypeAndValue, text string) value {
 	switch tv.Value.Kind() {
 	case constant.Int, constant.Float:
 		f, _ := constant.Float64Val(tv.Value)
@@ -70,12 +108,23 @@ func constantValue(tv types.TypeAndValue, text string) value {
 			Evidence: text,
 		}})
 	case constant.String:
-		return known([]constraint.Guarantee{{
+		g := constraint.Guarantee{
 			Kind:     constraint.KindEnumMember,
 			Members:  []string{constant.StringVal(tv.Value)},
 			Why:      "a literal",
 			Evidence: text,
-		}})
+		}
+		v := known(nil)
+		if named, ok := tv.Type.(*types.Named); ok && named.Obj().Pkg() != nil {
+			g.EnumType = named.Obj().Pkg().Name() + "." + named.Obj().Name()
+			if p.opts.InferConstraints && p.isScannedPackage(named.Obj().Pkg()) {
+				g.Origin = constraint.OriginInferred
+				g.Why = "every value written is a " + g.EnumType + " constant"
+				v.origin = constraint.OriginInferred
+			}
+		}
+		v.gs = []constraint.Guarantee{g}
+		return v
 	}
 	return unknown
 }
@@ -89,6 +138,9 @@ func (p *Program) zeroValue(t types.Type) value {
 		case u.Info()&types.IsString != 0:
 			return known([]constraint.Guarantee{{Kind: constraint.KindEnumMember, Members: []string{""}, Why: "the zero value", Evidence: `""`}})
 		}
+	case *types.Pointer, *types.Slice, *types.Map, *types.Interface, *types.Signature, *types.Chan:
+		// nil: known, and it carries nothing.
+		return known(nil)
 	}
 	return unknown
 }
@@ -110,11 +162,11 @@ func (p *Program) carrierValue(c *carrier) value {
 		return unknown
 	}
 	return value{
-		gs:           c.resolved,
-		ok:           true,
-		fromContract: c.fromContract,
-		origins:      c.origins,
-		via:          []*carrier{c},
+		gs:      c.resolved,
+		ok:      true,
+		origin:  c.origin,
+		origins: c.origins,
+		via:     []*carrier{c},
 	}
 }
 
@@ -127,10 +179,10 @@ func (p *Program) selectorValue(pkg *packages.Package, sel *ast.SelectorExpr) va
 	if f, ok := p.contractField(s.Recv(), fv); ok {
 		pos := p.position(sel.Pos())
 		return value{
-			gs:           append([]constraint.Guarantee(nil), f.Guarantees...),
-			ok:           true,
-			fromContract: true,
-			direct:       true,
+			gs:     append([]constraint.Guarantee(nil), f.Guarantees...),
+			ok:     true,
+			origin: constraint.OriginContract,
+			direct: true,
 			origins: []origin{{
 				file:  p.relPath(pos.Filename),
 				line:  pos.Line,
@@ -167,8 +219,13 @@ func (p *Program) callValue(pkg *packages.Package, call *ast.CallExpr, depth int
 	}
 	if id, ok := ast.Unparen(call.Fun).(*ast.Ident); ok {
 		if b, isBuiltin := info.Uses[id].(*types.Builtin); isBuiltin {
-			if b.Name() == "len" && len(call.Args) == 1 {
-				return lengthOf(p.valueOf(pkg, call.Args[0], depth+1))
+			switch b.Name() {
+			case "len":
+				if len(call.Args) == 1 {
+					return lengthOf(p.valueOf(pkg, call.Args[0], depth+1))
+				}
+			case "make", "new":
+				return p.nonNull(b.Name())
 			}
 			return unknown
 		}
@@ -211,11 +268,11 @@ func (p *Program) getterValue(pkg *packages.Package, sel *ast.SelectorExpr) (val
 	}
 	pos := p.position(sel.Pos())
 	return value{
-		gs:           append([]constraint.Guarantee(nil), f.Guarantees...),
-		ok:           true,
-		fromContract: true,
-		direct:       true,
-		origins:      []origin{{file: p.relPath(pos.Filename), line: pos.Line, text: p.nodeText(pkg, sel) + "()", field: f.Display()}},
+		gs:      append([]constraint.Guarantee(nil), f.Guarantees...),
+		ok:      true,
+		origin:  constraint.OriginContract,
+		direct:  true,
+		origins: []origin{{file: p.relPath(pos.Filename), line: pos.Line, text: p.nodeText(pkg, sel) + "()", field: f.Display()}},
 	}, true
 }
 
@@ -245,7 +302,7 @@ func convert(v value, target types.Type) value {
 	if !ok {
 		return unknown
 	}
-	out := value{ok: true, fromContract: v.fromContract, origins: v.origins, via: v.via}
+	out := value{ok: true, origin: v.origin, origins: v.origins, via: v.via}
 	switch {
 	case basic.Info()&types.IsInteger != 0:
 		width, _ := constraint.IntegerWidth(basic.Name())
@@ -276,13 +333,14 @@ func lengthOf(v value) value {
 	if !v.ok {
 		return unknown
 	}
-	out := value{ok: true, fromContract: v.fromContract, direct: v.direct, origins: v.origins, via: v.via}
+	out := value{ok: true, origin: v.origin, direct: v.direct, origins: v.origins, via: v.via}
 	if g, ok := constraint.Has(v.gs, constraint.KindNonEmptyArray); ok {
 		out.gs = []constraint.Guarantee{{
 			Kind:     constraint.KindNonEmptyArray,
 			Interval: g.Interval,
 			Why:      g.Why,
 			Evidence: g.Evidence,
+			Origin:   g.Origin,
 		}}
 	}
 	return out
@@ -321,11 +379,11 @@ func (p *Program) resolveCarriers() {
 
 func (p *Program) resolveOne(c *carrier) bool {
 	var (
-		joined       []constraint.Guarantee
-		first        = true
-		fromContract bool
-		origins      []origin
-		production   int
+		joined     []constraint.Guarantee
+		first      = true
+		source     string
+		origins    []origin
+		production int
 	)
 	for _, w := range c.writes {
 		if w.test && !p.opts.CensusTests {
@@ -338,9 +396,7 @@ func (p *Program) resolveOne(c *carrier) bool {
 		if !v.ok {
 			return false
 		}
-		if v.fromContract {
-			fromContract = true
-		}
+		source = constraint.StrongerOrigin(source, v.origin)
 		origins = appendOrigins(origins, v.origins)
 		if first {
 			joined, first = v.gs, false
@@ -354,7 +410,7 @@ func (p *Program) resolveOne(c *carrier) bool {
 	}
 	c.resolved = joined
 	c.resolvedOK = true
-	c.fromContract = fromContract
+	c.origin = source
 	c.origins = origins
 	return true
 }

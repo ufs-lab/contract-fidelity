@@ -37,6 +37,9 @@ type DeadGuard struct {
 	Widening *Widening          `json:"widening,omitempty"`
 	// Boundary is true when the guard reads the contract directly.
 	Boundary bool `json:"boundary"`
+	// Origin is "contract" or "inferred": which source supplied the
+	// guarantee.
+	Origin string `json:"origin"`
 }
 
 // Fingerprint identifies the finding across edits: the guard text, the
@@ -56,6 +59,7 @@ type WideningFinding struct {
 	Kind      constraint.Kind `json:"kind"`
 	Why       string          `json:"why"`
 	Origins   []Origin        `json:"origins"`
+	Origin    string          `json:"origin"`
 }
 
 // Fingerprint mirrors the upstream tool: declaration, declared type,
@@ -72,11 +76,16 @@ func toOrigins(os []origin) []Origin {
 	return out
 }
 
-func contractOf(os []origin) string {
-	if len(os) == 0 {
-		return "(inferred)"
+// contractOf names what a finding disagrees with: the contract field for a
+// contract guarantee, the program's own type for an inferred one.
+func contractOf(os []origin, g constraint.Guarantee) string {
+	if len(os) > 0 && g.Origin == constraint.OriginContract {
+		return os[0].field
 	}
-	return os[0].field
+	if g.EnumType != "" {
+		return g.EnumType
+	}
+	return "(inferred " + string(g.Kind) + ")"
 }
 
 func typeString(t types.Type) string {

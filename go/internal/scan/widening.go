@@ -33,7 +33,7 @@ func (p *Program) Widenings() []WideningFinding {
 }
 
 func (p *Program) carrierWidening(c *carrier) (WideningFinding, bool) {
-	if c.disqualified != "" || !c.resolvedOK || !c.fromContract || len(c.resolved) == 0 {
+	if c.disqualified != "" || !c.resolvedOK || c.origin == "" || len(c.resolved) == 0 {
 		return WideningFinding{}, false
 	}
 	basic, ok := c.declType.Underlying().(*types.Basic)
@@ -46,22 +46,23 @@ func (p *Program) carrierWidening(c *carrier) (WideningFinding, bool) {
 		Line:     c.pos.Line,
 		Declared: c.name,
 		Type:     declared,
-		Contract: contractOf(c.origins),
 		Origins:  toOrigins(c.origins),
 	}
 	if basic.Info()&types.IsString != 0 {
 		enum, ok := constraint.Enum(c.resolved)
-		if !ok || enum.EnumType == "" || declared == enum.EnumType {
+		if !ok || enum.Origin == "" || enum.EnumType == "" || declared == enum.EnumType {
 			return WideningFinding{}, false
 		}
 		base.Suggested = enum.EnumType
 		base.Kind = constraint.KindEnumMember
 		base.Why = "every value that reaches it is a " + enum.EnumType
+		base.Contract = contractOf(c.origins, enum)
+		base.Origin = enum.Origin
 		return base, true
 	}
 	if basic.Info()&types.IsInteger != 0 {
 		g, ok := constraint.Has(c.resolved, constraint.KindIntegerWidth)
-		if !ok || g.IntType == "" || basic.Name() == g.IntType {
+		if !ok || g.Origin == "" || g.IntType == "" || basic.Name() == g.IntType {
 			return WideningFinding{}, false
 		}
 		declaredWidth, ok := constraint.IntegerWidth(basic.Name())
@@ -71,6 +72,8 @@ func (p *Program) carrierWidening(c *carrier) (WideningFinding, bool) {
 		base.Suggested = g.IntType
 		base.Kind = constraint.KindIntegerWidth
 		base.Why = "every value that reaches it is an " + g.IntType
+		base.Contract = contractOf(c.origins, g)
+		base.Origin = g.Origin
 		return base, true
 	}
 	return WideningFinding{}, false
