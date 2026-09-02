@@ -11,20 +11,118 @@
 import ts from "typescript";
 import { constraintForClientProperty } from "./contract.mjs";
 import { constraintFromType } from "./inferred.mjs";
-import { getConfig } from "./program.mjs";
+import { getConfig, isTestFile } from "./program.mjs";
 
 // How far to chase an argument that is a plain local back to its initialiser.
 const ALIAS_DEPTH = 2;
 
-// Index every call in the program by the function declaration it resolves to.
+const FUNCTION_LIKE_KINDS = new Set([
+  ts.SyntaxKind.FunctionDeclaration,
+  ts.SyntaxKind.FunctionExpression,
+  ts.SyntaxKind.ArrowFunction,
+  ts.SyntaxKind.MethodDeclaration,
+]);
+
+// The function-like declarations an identifier can stand for.
+//
+// `const addScope = (s?: string) => ...` declares the function on the
+// initialiser, and a parameter's `parent` is that initialiser, so that is the
+// node the census keys on.
+function functionsBehind(symbol) {
+  const out = [];
+  for (const decl of symbol?.declarations ?? []) {
+    if (FUNCTION_LIKE_KINDS.has(decl.kind)) out.push(decl);
+    else if (
+      (ts.isVariableDeclaration(decl) || ts.isPropertyDeclaration(decl)) &&
+      decl.initializer &&
+      FUNCTION_LIKE_KINDS.has(decl.initializer.kind)
+    ) {
+      out.push(decl.initializer);
+    }
+  }
+  return out;
+}
+
+// Is this identifier a use of the value itself, rather than a call of it?
+//
+// `addScope(x)` and `<Row />` are calls: the census sees the arguments. Every
+// other use hands the function to somebody else, who will call it with
+// arguments this census will never read. Returns the node to test - for
+// `obj.method` the whole property access, since that is what gets passed.
+function valueUseNode(id) {
+  const parent = id.parent;
+  if (!parent) return null;
+
+  // `{ addScope }` passes the function; every other `name:` position is a
+  // declaration or a label, not a use.
+  if (
+    parent.name === id &&
+    !ts.isShorthandPropertyAssignment(parent) &&
+    !ts.isPropertyAccessExpression(parent)
+  ) {
+    return null;
+  }
+  // An import or export binding is not itself a use. Under `closedWorld` the
+  // uses are in this program; without it, `isExported` already refuses to
+  // prove anything about an exported function.
+  if (
+    ts.isImportSpecifier(parent) ||
+    ts.isImportClause(parent) ||
+    ts.isNamespaceImport(parent) ||
+    ts.isImportEqualsDeclaration(parent) ||
+    ts.isExportSpecifier(parent)
+  ) {
+    return null;
+  }
+
+  const node =
+    ts.isPropertyAccessExpression(parent) && parent.name === id ? parent : id;
+  const owner = node.parent;
+  if (!owner) return node;
+
+  // The callee of a call is a call, not a value use.
+  if (
+    (ts.isCallExpression(owner) ||
+      ts.isNewExpression(owner) ||
+      ts.isTaggedTemplateExpression(owner)) &&
+    owner.expression === node
+  ) {
+    return null;
+  }
+  if (ts.isDecorator(owner) && owner.expression === node) return null;
+  // A JSX tag is a call of the component with the attributes as its props.
+  if (
+    (ts.isJsxOpeningElement(owner) ||
+      ts.isJsxSelfClosingElement(owner) ||
+      ts.isJsxClosingElement(owner)) &&
+    owner.tagName === node
+  ) {
+    return null;
+  }
+  return node;
+}
+
+// Index every call in the program by the function declaration it resolves to,
+// and record every function that is handed around as a VALUE.
+//
 // Test files are INCLUDED here on purpose: a test that legitimately passes
 // null proves the branch is reachable, and suppressing the finding is the
 // right answer even though tests are not scanned for origins.
 export function buildCallCensus(program, checker, isCandidateFile) {
   const byFunction = new Map();
+  // Function-like declarations whose calls this census cannot enumerate,
+  // because the function was passed somewhere as a value.
+  const valueReferenced = new Set();
+
   for (const sf of program.getSourceFiles()) {
     if (sf.isDeclarationFile || !isCandidateFile(sf)) continue;
     const visit = (node) => {
+      // A type node holds no calls and no value uses. `class A extends
+      // mixin(Base)` is the exception: TypeScript files a heritage clause
+      // under the type nodes, and the call in it is a real call.
+      if (ts.isTypeNode(node) && !ts.isExpressionWithTypeArguments(node)) {
+        return;
+      }
       if (ts.isCallExpression(node)) {
         const sig = checker.getResolvedSignature(node);
         const decl = sig?.getDeclaration?.();
@@ -33,11 +131,22 @@ export function buildCallCensus(program, checker, isCandidateFile) {
           byFunction.get(decl).push(node);
         }
       }
+      if (ts.isIdentifier(node) && valueUseNode(node)) {
+        // `{ addScope }` binds a property symbol to the name; the value it
+        // passes on is the symbol the shorthand stands for.
+        let symbol = ts.isShorthandPropertyAssignment(node.parent)
+          ? checker.getShorthandAssignmentValueSymbol(node.parent)
+          : checker.getSymbolAtLocation(node);
+        if (symbol && symbol.flags & ts.SymbolFlags.Alias) {
+          symbol = checker.getAliasedSymbol(symbol);
+        }
+        for (const fn of functionsBehind(symbol)) valueReferenced.add(fn);
+      }
       ts.forEachChild(node, visit);
     };
     ts.forEachChild(sf, visit);
   }
-  return byFunction;
+  return { byFunction, valueReferenced };
 }
 
 // The contract constraint an argument expression carries, if any.
@@ -99,8 +208,26 @@ export function guaranteeAcrossCallSites(paramDecl, census, checker) {
   const index = fn.parameters.indexOf(paramDecl);
   if (index < 0) return null;
 
-  const calls = census.get(fn);
+  // A function handed to somebody else as a VALUE is called from places this
+  // census cannot read: `Object.keys(x).forEach(addScope)` calls addScope once
+  // per key, with arguments no call expression in this program names. The
+  // census then holds the direct calls only, and proving a parameter from them
+  // is proving it from a fraction of its callers. `addScope(scope?: string |
+  // null)` was reported "1 call site" three lines above the forEach that is
+  // its real caller.
+  if (census.valueReferenced.has(fn)) return null;
+
+  const calls = census.byFunction.get(fn);
   if (!calls || calls.length === 0) return null;
+
+  // A test passes whatever the test needs. It proves a branch is REACHABLE,
+  // which is why the census reads tests at all, and it proves nothing about
+  // what production always supplies. The field census has always said so; the
+  // parameter census did not, and an overload signature whose single caller
+  // was its own `.test.ts` was reported for exactly that reason.
+  if (calls.every((call) => isTestFile(call.getSourceFile().fileName))) {
+    return null;
+  }
 
   let shared = null;
   let example = null;
@@ -139,7 +266,10 @@ export function verdictAcrossCallSites(paramDecl, census, checker, decide) {
   const index = fn.parameters.indexOf(paramDecl);
   if (index < 0) return null;
 
-  const calls = census.get(fn);
+  // Calls this census cannot enumerate - see guaranteeAcrossCallSites.
+  if (census.valueReferenced.has(fn)) return null;
+
+  const calls = census.byFunction.get(fn);
   if (!calls || calls.length === 0) return null;
 
   let shared = null;

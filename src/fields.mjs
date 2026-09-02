@@ -24,6 +24,34 @@ import { guaranteeOfExpression } from "./census.mjs";
 import { onlyNullishWasAdded } from "./inferred.mjs";
 import { dropsGuarantee } from "./analyze.mjs";
 
+const ASSIGNMENT_OPS = new Set([
+  ts.SyntaxKind.EqualsToken,
+  ts.SyntaxKind.PlusEqualsToken,
+  ts.SyntaxKind.MinusEqualsToken,
+  ts.SyntaxKind.AsteriskEqualsToken,
+  ts.SyntaxKind.AsteriskAsteriskEqualsToken,
+  ts.SyntaxKind.SlashEqualsToken,
+  ts.SyntaxKind.PercentEqualsToken,
+  ts.SyntaxKind.LessThanLessThanEqualsToken,
+  ts.SyntaxKind.GreaterThanGreaterThanEqualsToken,
+  ts.SyntaxKind.GreaterThanGreaterThanGreaterThanEqualsToken,
+  ts.SyntaxKind.AmpersandEqualsToken,
+  ts.SyntaxKind.BarEqualsToken,
+  ts.SyntaxKind.CaretEqualsToken,
+  ts.SyntaxKind.BarBarEqualsToken,
+  ts.SyntaxKind.AmpersandAmpersandEqualsToken,
+  ts.SyntaxKind.QuestionQuestionEqualsToken,
+]);
+
+const isAssignment = (kind) => ASSIGNMENT_OPS.has(kind);
+
+// Calls that write fields by name at runtime. What they write is not an
+// expression this census can read, so every field of the target is unproven.
+const MUTATORS = new Map([
+  ["Object", new Set(["assign", "defineProperty", "defineProperties"])],
+  ["Reflect", new Set(["set", "defineProperty", "deleteProperty"])],
+]);
+
 // A field whose declared type still carries the guarantee has not widened,
 // and a guard on it is TypeScript's business, not ours.
 // Does `type` fail to carry `constraint`? Shared by every carrier - a field,
@@ -190,6 +218,7 @@ export function buildFieldWriteIndex(
   checker,
   isCandidateFile,
   rootDir,
+  valueReferenced = null,
 ) {
   const index = new Map(); // target symbol -> { writes: [], disqualified: bool }
 
@@ -224,11 +253,85 @@ export function buildFieldWriteIndex(
     return index.get(target);
   };
 
-  const disqualifyPropsOf = (type) => {
+  // Every object-like member of a type, so a union slot is read member by
+  // member rather than through the properties they happen to share.
+  const objectMembers = (type) =>
+    (type.isUnion() ? type.types : [type]).filter(
+      (m) => (m.flags & ts.TypeFlags.Object) !== 0,
+    );
+
+  // A write the census cannot read at all: every field of the type could now
+  // hold anything.
+  const disqualifyEveryFieldOf = (type) => {
     if (!type) return;
-    for (const prop of checker.getPropertiesOfType(type))
-      entry(prop).disqualified = true;
+    for (const shape of objectMembers(type)) {
+      for (const prop of checker.getPropertiesOfType(shape)) {
+        if (isOwnedField(prop, rootDir)) entry(prop).disqualified = true;
+      }
+    }
   };
+
+  // A spread writes the fields of the TARGET, with whatever the SOURCE holds.
+  //
+  //   const vm: RowVM = { ...row };      // row: ApiRow
+  //   <Row {...props} />
+  //
+  // The census used to disqualify the fields of the SOURCE type, which are
+  // the fields nothing was written into: a spread READS its source. So
+  // `RowVM.name` stayed proven from the one literal elsewhere that supplied
+  // it, while `{ ...row }` was free to put `null` there. A target field whose
+  // source field is optional, nullable, or absent can be absent too, and the
+  // only sound answer is to disqualify it.
+  //
+  // `suppliedAfter` holds the names written AFTER the spread in the same
+  // literal, which the spread cannot reach: `{ ...row, name: "x" }` supplies
+  // `name` whatever `row` holds.
+  const disqualifyFromSpread = (targetShape, sourceExpr, suppliedAfter) => {
+    const sourceType = checker.getTypeAtLocation(sourceExpr);
+    for (const targetProp of checker.getPropertiesOfType(targetShape)) {
+      const name = targetProp.getName();
+      if (suppliedAfter.has(name)) continue;
+      if (!isOwnedField(targetProp, rootDir)) continue;
+      const sourceProp = sourceType
+        ? checker.getPropertyOfType(sourceType, name)
+        : null;
+      // `{ ...state, count: n }` spreads a type into itself. Every field
+      // joins with itself, so nothing new arrives and nothing is disproven.
+      if (sourceProp && keyOf(sourceProp) === keyOf(targetProp)) continue;
+      const unsafe =
+        !sourceProp ||
+        (sourceProp.flags & ts.SymbolFlags.Optional) !== 0 ||
+        dropsGuarantee(
+          checker.getTypeOfSymbolAtLocation(sourceProp, sourceExpr),
+          checker,
+        );
+      if (unsafe) entry(targetProp).disqualified = true;
+    }
+  };
+
+  // The name a property or JSX attribute writes, when it is written plainly.
+  const writtenName = (prop) =>
+    prop.name &&
+    (ts.isIdentifier(prop.name) || ts.isStringLiteralLike(prop.name))
+      ? prop.name.text
+      : null;
+
+  // A string key that names one field. `o[k] = e` with a computed key names
+  // no field, and is handled as a write the census cannot read.
+  const literalKey = (expr) =>
+    expr && (ts.isStringLiteralLike(expr) ? expr.text : null);
+
+  // A function that is handed around as a value is called from places this
+  // census cannot read, and an unseen call site builds its own arguments:
+  // `component={AccountCell}` is rendered by ag-Grid with a props object ag-
+  // Grid constructs, and `rows.forEach(addRow)` calls addRow with whatever
+  // the library holds. So every field of every parameter type of such a
+  // function receives values no literal in this program supplies.
+  for (const fn of valueReferenced ?? []) {
+    for (const param of fn.parameters ?? []) {
+      disqualifyEveryFieldOf(checker.getTypeAtLocation(param));
+    }
+  }
 
   for (const sf of program.getSourceFiles()) {
     if (sf.isDeclarationFile || !isCandidateFile(sf)) continue;
@@ -267,12 +370,7 @@ export function buildFieldWriteIndex(
           // means unproven. This is the same rule, for the same reason.
           const supplied = new Set(
             node.properties
-              .map((prop) =>
-                prop.name && (ts.isIdentifier(prop.name) ||
-                  ts.isStringLiteralLike(prop.name))
-                  ? prop.name.text
-                  : null,
-              )
+              .map(writtenName)
               .filter((name) => name !== null),
           );
           for (const candidate of checker.getPropertiesOfType(contextual)) {
@@ -286,71 +384,98 @@ export function buildFieldWriteIndex(
               entry(candidate).disqualified = true;
             }
           }
-          for (const prop of node.properties) {
+          node.properties.forEach((prop, at) => {
             if (ts.isSpreadAssignment(prop)) {
-              // Values could arrive from anywhere this object was spread from.
-              disqualifyPropsOf(checker.getTypeAtLocation(prop.expression));
-              continue;
+              const after = new Set(
+                node.properties
+                  .slice(at + 1)
+                  .map(writtenName)
+                  .filter((name) => name !== null),
+              );
+              disqualifyFromSpread(contextual, prop.expression, after);
+              return;
             }
-            const name =
-              prop.name && ts.isIdentifier(prop.name)
-                ? prop.name.text
-                : prop.name && ts.isStringLiteralLike(prop.name)
-                  ? prop.name.text
-                  : null;
-            if (!name) continue;
+            const name = writtenName(prop);
+            if (!name) return;
             const target = checker.getPropertyOfType(contextual, name);
-            if (!target || !isOwnedField(target, rootDir)) continue;
+            if (!target || !isOwnedField(target, rootDir)) return;
             if (ts.isPropertyAssignment(prop))
               entry(target).writes.push(prop.initializer);
             else if (ts.isShorthandPropertyAssignment(prop))
               entry(target).writes.push(prop.name);
             else entry(target).disqualified = true;
-          }
+          });
         }
       }
 
-      // `<Component field={expr} />`
-      if (ts.isJsxAttribute(node) && node.initializer) {
-        const target = checker.getSymbolAtLocation(node.name);
-        if (target && isOwnedField(target, rootDir)) {
-          const init = node.initializer;
-          if (ts.isJsxExpression(init) && init.expression) {
-            entry(target).writes.push(init.expression);
-          } else {
-            entry(target).disqualified = true;
-          }
-        }
-      }
-      if (ts.isJsxSpreadAttribute(node)) {
-        disqualifyPropsOf(checker.getTypeAtLocation(node.expression));
-      }
-
-      // `<Component />` without an optional prop is the same omission.
+      // `<Component field={expr} />`, the props it leaves out, and the props
+      // a `{...spread}` supplies.
       //
-      // A prop passed at two call sites and left out at twenty is not a prop
-      // every caller supplies, and every optional component prop in the
-      // sample was reported for exactly this reason.
+      // The attribute write is keyed on the PROPS FIELD, through the
+      // contextual props type. `checker.getSymbolAtLocation(attr.name)`
+      // returns a symbol whose declaration is the JsxAttribute node itself,
+      // and no read of the props type ever resolves to that symbol, so every
+      // JSX write - 22,781 of them in the application this tool was measured
+      // on - landed in a census nobody consulted. A props field written
+      // `<C x={maybe} />` was then proven non-null from the one object
+      // literal elsewhere that supplied it.
+      //
+      // Omission is a write of "absent", for the reason the object literal
+      // rule gives above: a prop passed at two call sites and left out at
+      // twenty is not a prop every caller supplies.
       if (ts.isJsxOpeningElement(node) || ts.isJsxSelfClosingElement(node)) {
         const propsType = checker.getContextualType?.(node.attributes);
+        const attributes = node.attributes.properties;
+        const attributeName = (attr) =>
+          ts.isJsxAttribute(attr) && ts.isIdentifier(attr.name)
+            ? attr.name.text
+            : null;
         if (propsType) {
           const supplied = new Set(
-            node.attributes.properties
-              .filter(ts.isJsxAttribute)
-              .map((attr) =>
-                ts.isIdentifier(attr.name) ? attr.name.text : null,
-              )
-              .filter((name) => name !== null),
+            attributes.map(attributeName).filter((name) => name !== null),
           );
-          for (const candidate of checker.getPropertiesOfType(propsType)) {
-            if (
-              (candidate.flags & ts.SymbolFlags.Optional) !== 0 &&
-              !supplied.has(candidate.getName()) &&
-              isOwnedField(candidate, rootDir)
-            ) {
-              entry(candidate).disqualified = true;
+          for (const shape of objectMembers(propsType)) {
+            for (const candidate of checker.getPropertiesOfType(shape)) {
+              if (
+                (candidate.flags & ts.SymbolFlags.Optional) !== 0 &&
+                !supplied.has(candidate.getName()) &&
+                isOwnedField(candidate, rootDir)
+              ) {
+                entry(candidate).disqualified = true;
+              }
             }
           }
+
+          attributes.forEach((attr, at) => {
+            if (ts.isJsxSpreadAttribute(attr)) {
+              // A later attribute overrides the spread: `<C {...p} x={1} />`.
+              const after = new Set(
+                attributes
+                  .slice(at + 1)
+                  .map(attributeName)
+                  .filter((name) => name !== null),
+              );
+              for (const shape of objectMembers(propsType)) {
+                disqualifyFromSpread(shape, attr.expression, after);
+              }
+              return;
+            }
+            const name = attributeName(attr);
+            if (name === null) return;
+            for (const shape of objectMembers(propsType)) {
+              const target = checker.getPropertyOfType(shape, name);
+              if (!target || !isOwnedField(target, rootDir)) continue;
+              const init = attr.initializer;
+              // `<C flag />` writes `true`, and `<C x={} />` writes nothing
+              // this census can read.
+              if (!init) entry(target).disqualified = true;
+              else if (!ts.isJsxExpression(init))
+                entry(target).writes.push(init);
+              else if (init.expression)
+                entry(target).writes.push(init.expression);
+              else entry(target).disqualified = true;
+            }
+          });
         }
       }
 
@@ -394,10 +519,6 @@ export function buildFieldWriteIndex(
         const slotType = checker.getContextualType(expr);
         const valueType = checker.getTypeAtLocation(expr);
         if (!slotType || !valueType) continue;
-        const objectMembers = (t) =>
-          (t.isUnion() ? t.types : [t]).filter(
-            (m) => (m.flags & ts.TypeFlags.Object) !== 0,
-          );
         for (const slot of objectMembers(slotType)) {
           for (const value of objectMembers(valueType)) {
             if (slot === value) continue;
@@ -419,15 +540,83 @@ export function buildFieldWriteIndex(
         }
       }
 
-      // `obj.field = expr`
+      // `obj.field = expr`, `obj["field"] = expr`, and the mutations that
+      // write a value the census cannot read.
+      //
+      //   obj.field = expr        a write, censused like a literal
+      //   obj["field"] = expr     the same write, spelled differently
+      //   obj[key] = expr         some field of obj, and we do not know which
+      //   obj.field ??= expr      a write whose value is not `expr` alone
+      //   delete obj.field        a write of "absent"
+      //   Object.assign(obj, x)   every field of obj, from a value we cannot
+      //                           read field by field
+      //
+      // `Settings.theme` was proven present while `s["theme"] = null` sat two
+      // lines below the literal that proved it.
+      if (ts.isBinaryExpression(node) && isAssignment(node.operatorToken.kind)) {
+        const plain = node.operatorToken.kind === ts.SyntaxKind.EqualsToken;
+        const write = (target) => {
+          if (!target || !isOwnedField(target, rootDir)) return;
+          if (plain) entry(target).writes.push(node.right);
+          else entry(target).disqualified = true;
+        };
+        if (ts.isPropertyAccessExpression(node.left)) {
+          write(checker.getSymbolAtLocation(node.left.name));
+        } else if (ts.isElementAccessExpression(node.left)) {
+          const key = literalKey(node.left.argumentExpression);
+          const objType = checker.getTypeAtLocation(node.left.expression);
+          if (key === null) disqualifyEveryFieldOf(objType);
+          else {
+            for (const shape of objectMembers(objType)) {
+              write(checker.getPropertyOfType(shape, key));
+            }
+          }
+        }
+      }
+
+      // `obj.field++`: a write whose value is arithmetic on the old one.
       if (
-        ts.isBinaryExpression(node) &&
-        node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
-        ts.isPropertyAccessExpression(node.left)
+        (ts.isPostfixUnaryExpression(node) ||
+          ts.isPrefixUnaryExpression(node)) &&
+        (node.operator === ts.SyntaxKind.PlusPlusToken ||
+          node.operator === ts.SyntaxKind.MinusMinusToken) &&
+        ts.isPropertyAccessExpression(node.operand)
       ) {
-        const target = checker.getSymbolAtLocation(node.left.name);
+        const target = checker.getSymbolAtLocation(node.operand.name);
         if (target && isOwnedField(target, rootDir))
-          entry(target).writes.push(node.right);
+          entry(target).disqualified = true;
+      }
+
+      if (ts.isDeleteExpression(node)) {
+        const removed = node.expression;
+        if (ts.isPropertyAccessExpression(removed)) {
+          const target = checker.getSymbolAtLocation(removed.name);
+          if (target && isOwnedField(target, rootDir))
+            entry(target).disqualified = true;
+        } else if (ts.isElementAccessExpression(removed)) {
+          const key = literalKey(removed.argumentExpression);
+          const objType = checker.getTypeAtLocation(removed.expression);
+          if (key === null) disqualifyEveryFieldOf(objType);
+          else {
+            for (const shape of objectMembers(objType)) {
+              const target = checker.getPropertyOfType(shape, key);
+              if (target && isOwnedField(target, rootDir))
+                entry(target).disqualified = true;
+            }
+          }
+        }
+      }
+
+      if (
+        ts.isCallExpression(node) &&
+        ts.isPropertyAccessExpression(node.expression) &&
+        ts.isIdentifier(node.expression.expression) &&
+        node.arguments.length > 0 &&
+        MUTATORS.get(node.expression.expression.text)?.has(
+          node.expression.name.text,
+        )
+      ) {
+        disqualifyEveryFieldOf(checker.getTypeAtLocation(node.arguments[0]));
       }
 
       // `private rafId: number | null = null;`

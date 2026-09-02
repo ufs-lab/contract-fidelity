@@ -161,11 +161,19 @@ export function collectViolations() {
     );
   }
 
+  // The census spans test files too - see census.mjs. It is built first
+  // because the write census needs to know which functions are handed around
+  // as values: their parameters receive objects built where nothing can read
+  // them.
+  const census = buildCallCensus(program, checker, (sf) =>
+    isScannedPath(sf.fileName),
+  );
   const index = buildFieldWriteIndex(
     program,
     checker,
     (sf) => isScannedPath(sf.fileName),
     REPO_ROOT,
+    census.valueReferenced,
   );
   const producedElsewhere = typesProducedOutsideLiterals(
     program,
@@ -228,9 +236,6 @@ export function collectViolations() {
   // Locals, return types, casts and parameters: the same loss, declared
   // somewhere other than a field.
   const isScanned = (sf) => isScannedFile(sf);
-  const census = buildCallCensus(program, checker, (sf) =>
-    isScannedPath(sf.fileName),
-  );
   const carriers = [
     ...findWidenedDeclarations(program, checker, isScanned),
     ...findWidenedParameters(program, checker, census, isScanned),
