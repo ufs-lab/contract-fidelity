@@ -5,7 +5,11 @@
     "moduleResolution": "Bundler",
     "strict": true,
     "noEmit": true,
-    "skipLibCheck": true
+    "skipLibCheck": true,
+    "jsx": "preserve"
   },
-  "include": ["app", "clients"]
+  "include": [
+    "app",
+    "clients"
+  ]
 }

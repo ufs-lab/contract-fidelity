@@ -48,7 +48,6 @@ import {
 } from "./fields.mjs";
 import {
   classifyGuard,
-  followIntoCalls,
   referencesTo,
   enclosingFunction,
   widensAwayFrom,
@@ -293,12 +292,20 @@ function fieldWidenNote(target, checker, rootDir) {
   };
 }
 
-function collectAcrossFields(program, checker, isScanned, rootDir, findings) {
+function collectAcrossFields(
+  program,
+  checker,
+  census,
+  isScanned,
+  rootDir,
+  findings,
+) {
   const index = buildFieldWriteIndex(
     program,
     checker,
     (sf) => isScannedPath(sf.fileName, rootDir),
     rootDir,
+    census.valueReferenced,
   );
   // The same exclusion `widening` applies: a shape that is cast, parsed or
   // awaited holds values this census never saw, so it proves nothing. This
@@ -389,7 +396,7 @@ export function analyzeProgram(
     collectInScope(sf, checker, rootDir, findings);
   }
   collectAcrossCalls(program, checker, census, isScanned, rootDir, findings);
-  collectAcrossFields(program, checker, isScanned, rootDir, findings);
+  collectAcrossFields(program, checker, census, isScanned, rootDir, findings);
 
   const all = dedupe(findings);
   return excludeBoundaryChecks ? all.filter((f) => !isBoundaryCheck(f)) : all;

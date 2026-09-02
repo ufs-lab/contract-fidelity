@@ -299,6 +299,106 @@ test("a shape that is cast into holds values the census never saw", () => {
   );
 });
 
+// ---------------------------------------------------------------------------
+// The census holes, one test each. Every one of these was a finding against
+// correct code, or a write that went into a census nobody read.
+// ---------------------------------------------------------------------------
+
+const widening = () => JSON.parse(run(["widening", "--json"]));
+const fieldNames = (rows) => rows.map((r) => r.field);
+
+test("a JSX attribute writes the props field, not the attribute", () => {
+  // `checker.getSymbolAtLocation(attr.name)` returns a symbol whose
+  // declaration is the JsxAttribute node. No read of the props type resolves
+  // to it, so every JSX write - 22,781 of them in the application this was
+  // measured on - landed in a census nobody consulted, and the props field
+  // was proven from the object literals alone.
+  const rows = widening();
+  assert.equal(
+    rows.some((r) => r.field === "CardProps.caption"),
+    false,
+    `<Card caption={maybe} /> writes string | null; saw: ${fieldNames(rows).join(", ")}`,
+  );
+  // The other direction: a props field whose every write is a JSX attribute
+  // is proven by them, and reported when the declaration is wider.
+  assert.ok(rows.some((r) => r.field === "BadgeProps.tone"));
+});
+
+test("a spread writes the fields of the target, not of the source", () => {
+  // A spread READS its source, so disqualifying the source's fields protects
+  // the one set of fields nothing was written into.
+  const rows = widening();
+  assert.equal(
+    rows.some((r) => r.field === "SpreadTarget.entity"),
+    false,
+    `{ ...src } can put null in SpreadTarget.entity; saw: ${fieldNames(rows).join(", ")}`,
+  );
+  assert.equal(
+    rows.some((r) => r.field === "PanelProps.heading"),
+    false,
+    "<Panel {...src} /> writes PanelProps.heading",
+  );
+  // A property written after the spread supplies the field whatever the
+  // source holds.
+  assert.ok(rows.some((r) => r.field === "OverrideTarget.entity"));
+});
+
+test("the writes a census cannot read disqualify the field", () => {
+  // `o["f"] = e`, `o[k] = e`, `delete o.f`, `o.f ??= e` and
+  // `Object.assign(o, x)` are all writes, and none of them was one.
+  const rows = widening();
+  for (const field of [
+    "Settings.theme",
+    "Dynamic.slot",
+    "Removable.tag",
+    "Notes.note",
+    "Merged.title",
+  ]) {
+    assert.equal(
+      rows.some((r) => r.field === field),
+      false,
+      `${field} is written where the census cannot read the value; saw: ${fieldNames(rows).join(", ")}`,
+    );
+  }
+});
+
+test("a function referenced as a value has callers the census cannot see", () => {
+  // `["a"].map(addScope)` calls addScope once per element, with arguments no
+  // call expression in this program names. The census then holds the direct
+  // calls only, and proving the parameter from them proves it from a
+  // fraction of its callers.
+  const rows = widening();
+  assert.equal(
+    rows.some((r) => r.declared.includes("addScope")),
+    false,
+  );
+  // The control: the same shape, called directly everywhere, stays provable.
+  assert.ok(rows.some((r) => r.declared.includes("describeScope")));
+});
+
+test("a component passed as a value is rendered with props nobody here writes", () => {
+  // `{ component: Tile }` hands Tile to somebody who renders it with a props
+  // object that somebody builds. TileProps.units then holds values no
+  // literal in this program supplies.
+  const rows = widening();
+  assert.equal(
+    rows.some((r) => r.field === "TileProps.units"),
+    false,
+    `Tile is passed as a value; saw: ${fieldNames(rows).join(", ")}`,
+  );
+});
+
+test("a parameter whose every call site is a test is not proven", () => {
+  // The field census has always said so. The parameter census did not, and
+  // an overload signature whose single caller was its own `.test.ts` was
+  // reported for exactly that reason.
+  const rows = widening();
+  assert.equal(
+    rows.some((r) => r.declared.includes("seededByTestCaller")),
+    false,
+  );
+});
+
 test("a whole object of another type flowing into a slot is a write", () => {
   // `useSlot(x)` where x: Src and Src.v is optional. The per-field census
   // sees only the one literal that supplies Slot.v; the whole-object flow is

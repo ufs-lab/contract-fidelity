@@ -346,23 +346,45 @@ The `value == null` branch is live.
 The scanner re-derives the verdict at every known call site before it reports
 anything on the callee side.
 It drops the finding unless every call site agrees.
-Four cases mean "unproven", and unproven is silent:
+These cases mean "unproven", and unproven is silent:
 
 - A parameter with no known caller.
 - A caller that passes an unconstrained value.
 - A spread argument.
 - A call that omits the argument.
+- A function that is handed to somebody else as a value. `list.forEach(addRow)`
+  calls `addRow` with arguments no call expression names.
+- A census made only of test-file callers.
 
 Fields work the same way.
 A guard on `vm.entityType` is dead only when every write into that field
 supplies a guaranteed value.
-A spread, a JSX spread, or any write the tool cannot resolve disqualifies the
-field.
 An unaccounted writer could supply anything.
+The census reads these writes:
+
+- A property in an object literal, against the literal's contextual type.
+- A JSX attribute, against the component's props type.
+- `obj.field = expr`, `obj["field"] = expr`, and a property initialiser.
+- The omission of an optional field, which is a write of "absent".
+
+These writes disqualify the field, because the census cannot read the value:
+
+- `delete obj.field`, `obj.field ??= expr`, `obj.field++`.
+- `obj[key] = expr` with a computed key, and `Object.assign(obj, x)`. Both
+  disqualify every field of the type.
+- A spread. `{ ...src }` and `<Row {...src} />` write the fields of the
+  TARGET, so a target field whose source field is optional, nullable or absent
+  is disqualified. A field the same literal supplies after the spread keeps
+  its own write.
+- A whole object of one type flowing into a slot of another, by the same rule.
+- Every field of every parameter type of a function that is handed around as a
+  value. A component passed as `component={Cell}` is rendered with a props
+  object the caller builds.
 
 Both censuses include test files on purpose.
 The tool never scans a test file for origins.
 A test that passes `null` proves the branch is reachable.
+A census made only of test-file writers proves nothing about production.
 
 ## Out of scope
 
@@ -372,8 +394,8 @@ A test that passes `null` proves the branch is reachable.
   present` guarantees nothing. Neither does `Non-empty means the event is
   excluded from matching`, which states an implication. The tool reads both as
   "no constraint".
-- More than two call hops. Past that point, the odds that the value is still
-  the same value fall faster than the odds of a real bug.
+- More than one call hop. The tool proves a parameter against its direct
+  callers. It does not follow a value into a second call.
 - Library parameters. A widened signature in `node_modules` is not yours to
   fix.
 

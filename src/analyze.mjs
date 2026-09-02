@@ -16,12 +16,6 @@ import {
 } from "./constraints.mjs";
 import { constraintForClientProperty, contractPathFor } from "./contract.mjs";
 
-// How many call hops a value is followed. Two covers "handler reads the
-// response, passes it to a helper, helper passes it to a formatter", which
-// is the shape the real cases take; beyond that the chance the value is
-// still the same value drops faster than the chance of finding a bug.
-const MAX_HOPS = 2;
-
 const COMPARISON_OPS = new Map([
   [ts.SyntaxKind.GreaterThanToken, ">"],
   [ts.SyntaxKind.GreaterThanEqualsToken, ">="],
@@ -522,39 +516,12 @@ function widensAwayFrom(paramDecl, constraint, checker) {
   return true;
 }
 
-// Follow a value from `argNode` into the callee it is passed to, and keep
-// following. Calls `onBinding(symbol, scope, hop)` for each place the value
-// comes to rest.
-function followIntoCalls(argNode, checker, hop, onBinding, seen) {
-  if (hop > MAX_HOPS) return;
-  const call = argNode.parent;
-  if (!call || !ts.isCallExpression(call)) return;
-  const index = call.arguments.indexOf(argNode);
-  if (index < 0) return;
-
-  const signature = checker.getResolvedSignature(call);
-  const paramSymbol = signature?.parameters?.[index];
-  const paramDecl = paramSymbol?.valueDeclaration;
-  if (!paramDecl || !ts.isParameter(paramDecl)) return;
-  // Only follow into source we own; a library parameter is not ours to fix.
-  if (paramDecl.getSourceFile().isDeclarationFile) return;
-  if (seen.has(paramSymbol)) return;
-  seen.add(paramSymbol);
-
-  const fn = paramDecl.parent;
-  if (!fn.body) return;
-
-  onBinding(paramSymbol, fn.body, { hop, paramDecl, call });
-}
-
 export {
   classifyGuard,
-  followIntoCalls,
   referencesTo,
   enclosingFunction,
   widensAwayFrom,
   dropsGuarantee,
   lineOf,
   textOf,
-  MAX_HOPS,
 };
