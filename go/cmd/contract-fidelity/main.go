@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/ufs-lab/contract-fidelity/go/internal/config"
+	"github.com/ufs-lab/contract-fidelity/go/internal/plan"
 	"github.com/ufs-lab/contract-fidelity/go/internal/ratchet"
 	"github.com/ufs-lab/contract-fidelity/go/internal/scan"
 )
@@ -23,6 +24,7 @@ commands:
   dead-code      a guarantee was dropped, and code downstream guards a value that cannot arrive
   widening       a declaration is wider than every value that reaches it
   contracts      every guarantee the tool read off the generated client
+  plan           the findings grouped into work items: one per contract field, merged by shared file
   explain NAME   the census of every carrier whose name contains NAME
 
 flags:
@@ -104,6 +106,8 @@ func run(args []string) int {
 		return runWidening(prog, cfg, dir, f)
 	case "contracts":
 		return runContracts(prog, f)
+	case "plan":
+		return runPlan(prog, f)
 	case "explain":
 		return runExplain(prog, positional, f)
 	default:
@@ -294,6 +298,30 @@ func runContracts(prog *scan.Program, f flags) int {
 		fmt.Printf("; no api/openapi.yaml beside: %s", strings.Join(noSpec, ", "))
 	}
 	fmt.Println()
+	return 0
+}
+
+// ---------------------------------------------------------------------------
+// plan
+// ---------------------------------------------------------------------------
+
+func runPlan(prog *scan.Program, f flags) int {
+	p := plan.Build(prog.ModulePath(), prog.DeadGuards(), prog.Widenings())
+	if f.asJSON {
+		return printJSON(p)
+	}
+	fix, ruling := p.Counts()
+	fmt.Printf("plan: %d work item(s) in %s: %d to fix, %d for a ruling\n", len(p.Items), p.Module, fix, ruling)
+	for _, it := range p.Items {
+		fmt.Printf("\n%-7s %s  %s\n", it.Kind, it.ID, strings.Join(it.Contracts, ", "))
+		fmt.Printf("        %d dead guard(s), %d widening(s)\n", len(it.Dead), len(it.Widening))
+		for _, d := range it.Dead {
+			fmt.Printf("        %s:%d `%s` is %s\n", d.File, d.Line, d.Guard, strings.ReplaceAll(string(d.Verdict), "-", " "))
+		}
+		for _, w := range it.Widening {
+			fmt.Printf("        %s:%d `%s: %s` could be `%s`\n", w.File, w.Line, w.Declared, w.Type, w.Suggested)
+		}
+	}
 	return 0
 }
 

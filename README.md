@@ -594,6 +594,7 @@ contract-fidelity dead-code --list             # every dead guard, with context
 contract-fidelity widening --list
 contract-fidelity dead-code --update-baseline  # ratchet down
 contract-fidelity explain Status               # the census of every carrier named Status
+contract-fidelity plan                         # the findings grouped into work items
 ```
 
 `contractPackages` holds import-path prefixes
@@ -654,6 +655,29 @@ supply a guarantee, as in the TypeScript tool:
 Each finding prints its origin, `contract:` or `inferred:`, and an inferred
 finding names the program's type, never a contract field.
 `explain NAME` prints each guarantee with its origin in angle brackets.
+
+### plan: the findings as work items
+
+`plan` groups every finding into the unit one person, or one agent, fixes
+in one change.
+Findings that disagree with the same contract field are one item: the
+dead guard, and every widened declaration on the way to it.
+Items that touch the same file are merged, so two changes never edit one
+file.
+A guard on a direct contract read (`body.CreatedIds == nil` on a required
+array) is a `ruling` item, kept apart from the `fix` items: the code keeps
+it on purpose against a server that breaks its own contract, or it is
+dead, and a person decides which.
+
+```bash
+contract-fidelity plan          # a report
+contract-fidelity plan --json   # {"module": ..., "items": [{id, kind, contracts, files, dead, widening}]}
+```
+
+Each item's `id` is a hash of its kind and contract keys, not of lines or
+files, so it survives edits above a finding and a move between files.
+A caller that files one ticket per item can key the ticket on
+`<module>/<id>` and find it again on the next run.
 
 ### go vet and golangci-lint
 
