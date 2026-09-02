@@ -665,17 +665,17 @@ dead guard, and every widened declaration on the way to it.
 Items that touch the same file are merged, so two changes never edit one
 file.
 A guard on a direct contract read (`body.CreatedIds == nil` on a required
-array) is a `ruling` item, kept apart from the `fix` items: the code keeps
-it on purpose against a server that breaks its own contract, or it is
-dead, and a person decides which.
+array) is a fix like any other: the contract is trusted (see "The contract
+is trusted" above); a project that does not trust it sets `trustContract`
+to `false` and the guard is not reported at all.
 
 ```bash
 contract-fidelity plan          # a report
-contract-fidelity plan --json   # {"module": ..., "items": [{id, kind, contracts, files, dead, widening}]}
+contract-fidelity plan --json   # {"module": ..., "items": [{id, contracts, files, dead, widening}]}
 ```
 
-Each item's `id` is a hash of its kind and contract keys, not of lines or
-files, so it survives edits above a finding and a move between files.
+Each item's `id` is a hash of its contract keys, not of lines or files, so
+it survives edits above a finding and a move between files.
 A caller that files one ticket per item can key the ticket on
 `<module>/<id>` and find it again on the next run.
 

@@ -52,12 +52,11 @@ func summary(p Plan) []string {
 	var out []string
 	for _, it := range p.Items {
 		b, _ := json.Marshal(struct {
-			Kind      string
 			Contracts []string
 			Files     []string
 			Dead      int
 			Wide      int
-		}{it.Kind, it.Contracts, it.Files, len(it.Dead), len(it.Widening)})
+		}{it.Contracts, it.Files, len(it.Dead), len(it.Widening)})
 		out = append(out, string(b))
 	}
 	return out
@@ -71,24 +70,17 @@ func TestBuildGroupsByContractAndFile(t *testing.T) {
 	}
 	want := []string{
 		// A file (boot.go) alone: an inferred guard is its own item.
-		`{"Kind":"fix","Contracts":["boot/boot.go a.done != nil :: (inferred required-non-null) :: integer-width"],"Files":["boot/boot.go"],"Dead":1,"Wide":0}`,
+		`{"Contracts":["boot/boot.go a.done != nil :: (inferred required-non-null) :: integer-width"],"Files":["boot/boot.go"],"Dead":1,"Wide":0}`,
 		// The second inferred guard shares the contract text but not a file: apart.
-		`{"Kind":"fix","Contracts":["fix/fix.go items == nil :: (inferred required-non-null) :: integer-width"],"Files":["fix/fix.go"],"Dead":1,"Wide":0}`,
-		// status and index share classify.go: one item across both files.
-		`{"Kind":"fix","Contracts":["client.Error.status","client.Result.index"],"Files":["ingest/classify.go","ingest/client.go"],"Dead":1,"Wide":2}`,
-		// id and code share types.go: one item across three files.
-		`{"Kind":"fix","Contracts":["client.Account.code","client.Account.id"],"Files":["prov/ports.go","svc/client.go","svc/types.go"],"Dead":1,"Wide":3}`,
-		// Boundary guards are rulings, not merged with the fix in svc/client.go.
-		`{"Kind":"ruling","Contracts":["client.Batch.results"],"Files":["ingest/client.go"],"Dead":1,"Wide":0}`,
-		`{"Kind":"ruling","Contracts":["client.Bulk.created_ids"],"Files":["svc/client.go"],"Dead":2,"Wide":0}`,
+		`{"Contracts":["fix/fix.go items == nil :: (inferred required-non-null) :: integer-width"],"Files":["fix/fix.go"],"Dead":1,"Wide":0}`,
+		// status, index and the boundary check on results share files under ingest/: one item.
+		`{"Contracts":["client.Batch.results","client.Error.status","client.Result.index"],"Files":["ingest/classify.go","ingest/client.go"],"Dead":2,"Wide":2}`,
+		// id, code and the boundary checks on created_ids share svc/client.go and types.go: one item.
+		`{"Contracts":["client.Account.code","client.Account.id","client.Bulk.created_ids"],"Files":["prov/ports.go","svc/client.go","svc/types.go"],"Dead":3,"Wide":3}`,
 	}
 	got := summary(p)
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("items:\n got %v\nwant %v", got, want)
-	}
-	fix, ruling := p.Counts()
-	if fix != 4 || ruling != 2 {
-		t.Fatalf("counts: %d fix, %d ruling", fix, ruling)
 	}
 }
 
@@ -125,13 +117,13 @@ func TestIDsAreStableAndDistinct(t *testing.T) {
 	if c.Items[3].ID != a.Items[3].ID {
 		t.Fatalf("id changed with a line: %s vs %s", c.Items[3].ID, a.Items[3].ID)
 	}
-	// The same contract as a fix and as a ruling are different work.
+	// Two guards on one contract field in different files are one item.
 	d := Build("m", []scan.DeadGuard{
 		dead("a.go", 1, "x == nil", "client.X.y", false),
 		dead("b.go", 1, "x == nil", "client.X.y", true),
 	}, nil)
-	if len(d.Items) != 2 || d.Items[0].ID == d.Items[1].ID {
-		t.Fatalf("fix and ruling share an id: %+v", summary(d))
+	if len(d.Items) != 1 || len(d.Items[0].Files) != 2 {
+		t.Fatalf("one contract field is one item: %+v", summary(d))
 	}
 }
 
