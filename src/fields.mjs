@@ -21,7 +21,8 @@
 import ts from "typescript";
 import { isScannedPath, isTestFile } from "./program.mjs";
 import { guaranteeOfExpression } from "./census.mjs";
-import { onlyNullishWasAdded } from "./inferred.mjs";
+import { isArrayLike } from "./contract.mjs";
+import { onlyNullishWasAdded, sameGuarantee } from "./inferred.mjs";
 import { dropsGuarantee } from "./analyze.mjs";
 
 const ASSIGNMENT_OPS = new Set([
@@ -302,6 +303,14 @@ export function buildFieldWriteIndex(
   // union returns only the properties common to every member, so a field
   // one branch lacks would read as "no such property" for the whole union,
   // and the branch that omits it would never be counted.
+  // The element type of an array or tuple type; any other type itself.
+  const elementOf = (type) =>
+    type.isUnion()
+      ? type
+      : isArrayLike(type, checker)
+        ? (checker.getTypeArguments(type)[0] ?? type)
+        : type;
+
   const disqualifyFromSpread = (
     targetShape,
     sourceExpr,
@@ -561,6 +570,10 @@ export function buildFieldWriteIndex(
         wholeObjectSlots.push(node.initializer);
       } else if (ts.isReturnStatement(node) && node.expression) {
         wholeObjectSlots.push(node.expression);
+      } else if (ts.isArrowFunction(node) && !ts.isBlock(node.body)) {
+        // `(): Step[] => names.map((n) => ({ name: n }))` returns without a
+        // return statement.
+        wholeObjectSlots.push(node.body);
       } else if (ts.isPropertyAssignment(node)) {
         wholeObjectSlots.push(node.initializer);
       }
@@ -571,8 +584,13 @@ export function buildFieldWriteIndex(
         const slotType = checker.getContextualType(expr);
         const valueType = checker.getTypeAtLocation(expr);
         if (!slotType || !valueType) continue;
-        for (const slot of objectMembers(slotType)) {
-          for (const value of objectMembers(valueType)) {
+        // An array of one type flowing into an array of another is each
+        // element flowing: `{ name }[]` into `Step[]` reaches `Step.output`.
+        // The literal inside a `.map` callback is contextually typed by the
+        // callback's own inference, never by `Step`, so nothing else in this
+        // census sees that `output` was left out.
+        for (const slot of objectMembers(elementOf(slotType))) {
+          for (const value of objectMembers(elementOf(valueType))) {
             if (slot === value) continue;
             if (slot.symbol && slot.symbol === value.symbol) continue;
             for (const slotProp of checker.getPropertiesOfType(slot)) {
@@ -742,7 +760,7 @@ export function constrainedFields(index, checker, rootDir, producedElsewhere) {
           break;
         }
         if (shared === null) shared = c;
-        else if (shared.kind !== c.kind) {
+        else if (!sameGuarantee(shared, c, checker)) {
           ok = false;
           break;
         }

@@ -64,6 +64,13 @@ const baselineFile = () =>
 function findOrigins(sf, checker) {
   const origins = [];
   const visit = (node) => {
+    // `options?.indent ?? 2`: the value is undefined whenever `options` is,
+    // whatever the field guarantees. A read through an optional chain says
+    // nothing about the field, so no guard on it is dead.
+    if (ts.isPropertyAccessExpression(node) && ts.isOptionalChain(node)) {
+      ts.forEachChild(node, visit);
+      return;
+    }
     if (ts.isPropertyAccessExpression(node) || ts.isBindingElement(node)) {
       const nameNode = ts.isBindingElement(node)
         ? (node.propertyName ?? node.name)
@@ -324,7 +331,7 @@ function collectAcrossFields(
     if (!isScanned(sf)) continue;
 
     const visit = (node) => {
-      if (ts.isPropertyAccessExpression(node)) {
+      if (ts.isPropertyAccessExpression(node) && !ts.isOptionalChain(node)) {
         const target = checker.getSymbolAtLocation(node.name);
         const info = target ? fields.get(target) : undefined;
         if (info) {

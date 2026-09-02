@@ -10,7 +10,7 @@
 
 import ts from "typescript";
 import { constraintForClientProperty } from "./contract.mjs";
-import { constraintFromType } from "./inferred.mjs";
+import { constraintFromType, sameGuarantee } from "./inferred.mjs";
 import { getConfig, isTestFile } from "./program.mjs";
 
 // How far to chase an argument that is a plain local back to its initialiser.
@@ -258,14 +258,9 @@ export function guaranteeAcrossCallSites(paramDecl, census, checker) {
       // Kept so the finding can point at a real call rather than at the
       // declaration, which tells a reader nothing they cannot already see.
       example = arg;
-    } else if (shared.kind !== constraint.kind) {
-      return null;
-    } else if (
-      shared.kind === "enum-member" &&
+    } else if (!sameGuarantee(shared, constraint, checker)) {
       // Two callers passing different unions prove only their union, and
       // narrowing to either one would break the other.
-      shared.members.join("|") !== constraint.members.join("|")
-    ) {
       return null;
     }
   }

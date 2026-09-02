@@ -427,3 +427,23 @@ test("spreads and literals: what a JSX or object spread supplies, and what a lit
     ],
   );
 });
+
+test("the join compares whole guarantees; an array return flows element by element", () => {
+  const rows = JSON.parse(run(["widening", "--json"])).filter((r) =>
+    r.file.endsWith("flows.ts"),
+  );
+  // `Choice.value` is fed two different unions: no narrowing target exists.
+  // `Step.output` is left out by every element of initialSteps().
+  // `Indented.indent` IS supplied by every caller that passes options.
+  assert.deepEqual(
+    rows.map((r) => [r.declared, r.suggestedType]),
+    [["indent?: number", "number"]],
+  );
+});
+
+test("a read through an optional chain is never a dead guard", () => {
+  const rows = JSON.parse(run(["dead-code", "--json"])).filter((r) =>
+    r.file.endsWith("flows.ts"),
+  );
+  assert.deepEqual(rows, []);
+});

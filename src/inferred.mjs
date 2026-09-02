@@ -248,3 +248,24 @@ export function narrowedDeclaration(declaredText) {
     .trim();
   return written.length > 0 ? written : null;
 }
+
+// Do two writes state the SAME guarantee?
+//
+// The census joins writes by unanimity, and it used to compare kinds alone:
+// two "enum-member" writes agreed whatever their members were, and the first
+// one named the suggestion. A `value: string` prop of a select used for
+// eight different literal unions was reported as narrowable to the first
+// of them. Same kind is necessary; the guarantee must match too.
+export function sameGuarantee(a, b, checker) {
+  if (a.kind !== b.kind) return false;
+  if (a.members || b.members) {
+    return (a.members ?? []).join("|") === (b.members ?? []).join("|");
+  }
+  if (a.type && b.type) {
+    return (
+      checker.isTypeAssignableTo(a.type, b.type) &&
+      checker.isTypeAssignableTo(b.type, a.type)
+    );
+  }
+  return a.sourceType === b.sourceType;
+}
