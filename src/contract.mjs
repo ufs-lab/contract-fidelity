@@ -97,7 +97,7 @@ function stringLiteralMembers(type) {
   return members.length >= 2 ? members : null;
 }
 
-function isArrayLike(type, checker) {
+export function isArrayLike(type, checker) {
   return checker.isArrayType?.(type) ?? false;
 }
 
