@@ -1,0 +1,29 @@
+openapi: 3.0.3
+info: { title: fixture, version: "1" }
+paths: {}
+components:
+  schemas:
+    BatchResult:
+      type: object
+      required: [event_id, index, status, items]
+      properties:
+        event_id: { type: string }
+        index: { type: integer, format: int32, minimum: 0, maximum: 65535 }
+        status: { $ref: "#/components/schemas/ResultStatus" }
+        items: { type: array, minItems: 1, items: { type: string } }
+        error: { $ref: "#/components/schemas/BatchError" }
+    BatchError:
+      type: object
+      required: [status, type]
+      properties:
+        status: { type: integer, format: int32, minimum: 400, maximum: 599 }
+        type: { type: string }
+    ResultStatus:
+      type: string
+      enum: [COMMITTED, ERROR]
+    Movement:
+      type: object
+      required: [amount, site_id]
+      properties:
+        amount: { type: integer, format: int64, description: "Amount in minor units (must be > 0)" }
+        site_id: { type: integer, format: int32 }

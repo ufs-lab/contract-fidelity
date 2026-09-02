@@ -11,7 +11,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -27,24 +28,29 @@ const PROJECT = join(HERE, "__project__");
 
 const CONFIG = join(PROJECT, "contract-fidelity.config.json");
 
-function run(args) {
+function run(args, env = {}) {
   const res = spawnSync(process.execPath, [BIN, ...args], {
     cwd: PROJECT,
     encoding: "utf8",
+    env: { ...process.env, ...env },
   });
   if (res.error) throw res.error;
   return `${res.stdout}${res.stderr}`;
 }
 
-// Run with one config key overridden, then put the file back.
+// Run with one config key overridden. The merged config goes to a private
+// temporary file named through CONTRACT_FIDELITY_CONFIG: the test files run
+// in parallel, and a rewrite of the shared config would race the other
+// suites' reads of it.
 function runWithConfig(overrides, args) {
-  const original = readFileSync(CONFIG, "utf8");
+  const merged = { ...JSON.parse(readFileSync(CONFIG, "utf8")), ...overrides };
+  const dir = mkdtempSync(join(tmpdir(), "contract-fidelity-"));
+  const path = join(dir, "contract-fidelity.config.json");
   try {
-    const merged = { ...JSON.parse(original), ...overrides };
-    writeFileSync(CONFIG, `${JSON.stringify(merged, null, 2)}\n`, "utf8");
-    return run(args);
+    writeFileSync(path, `${JSON.stringify(merged, null, 2)}\n`, "utf8");
+    return run(args, { CONTRACT_FIDELITY_CONFIG: path });
   } finally {
-    writeFileSync(CONFIG, original, "utf8");
+    rmSync(dir, { recursive: true, force: true });
   }
 }
 

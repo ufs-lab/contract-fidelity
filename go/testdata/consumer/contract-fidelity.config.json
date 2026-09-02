@@ -1,0 +1,4 @@
+{
+  "contractPackages": ["example.com/client"],
+  "scanRoots": ["app"]
+}

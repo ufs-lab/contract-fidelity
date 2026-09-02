@@ -66,6 +66,9 @@ Do not use both files.
 | `baselineDir` | `.contract-fidelity` | Where the tool writes the baselines. |
 | `docPatterns` | `[]` | Extra prose patterns for your own generator. |
 
+`CONTRACT_FIDELITY_CONFIG` names a config file elsewhere than the project
+root, for a run that must not touch the shared file.
+
 `contractPackages` has no default, and the tool fails without it.
 A scan that matches no contract reports "clean" while it checks nothing.
 A value matches `node_modules/@acme/...` and pnpm's
@@ -573,3 +576,74 @@ nothing there and reports a clean run.
 ## License
 
 MIT.
+
+## Go
+
+The `go/` directory holds the same tool for a Go program that consumes a
+generated Go client (`openapi-generator`'s `go` template).
+It is a separate implementation on `go/packages` and `go/types`, not a port:
+the analysis is the same, the compiler API is Go's.
+It reads the same `contract-fidelity.config.json` and writes the same
+version-2 baseline, so one gate serves both languages.
+
+```bash
+go install github.com/ufs-lab/contract-fidelity/go/cmd/contract-fidelity@latest
+
+contract-fidelity contracts                    # audit the index
+contract-fidelity dead-code --list             # every dead guard, with context
+contract-fidelity widening --list
+contract-fidelity dead-code --update-baseline  # ratchet down
+contract-fidelity explain Status               # the census of every carrier named Status
+```
+
+`contractPackages` holds import-path prefixes
+(`github.com/acme/ledger-service/clients/go`); `scanRoots` holds
+directories under the module root (`internal`, `cmd`), scanned as
+`./internal/...`.
+`tsconfig` is accepted and ignored.
+One extra key, `censusTests` (default `true`), says whether writes in
+`_test.go` files count in the census; `--census-tests=false` overrides it
+for one run.
+
+### What the Go index reads
+
+| Kind | Where it comes from |
+| --- | --- |
+| `required-non-null` | A plain value field without `omitempty` and not a `Nullable*` wrapper |
+| `enum-member` | A named string type with constants AND a strict `UnmarshalJSON` |
+| `integer-width` | The field's integer type (`int32`) |
+| `positive`, `non-negative`, `range` | `minimum` / `maximum` in the client's bundled `api/openapi.yaml`, or the doc-comment prose patterns above |
+| `non-empty-array` | `minItems` in the spec, or the prose patterns |
+
+The spec beside the client is the better source: `openapi-generator` ships
+it, and `minimum: 400` needs no heuristic.
+
+### What the Go scan follows
+
+A value flows from a contract read through conversions (`int(x)`,
+`string(x)`), locals, struct fields, parameters, method receivers, result
+slots, and map elements.
+The census reads every write into each: literal fields (an omitted field is
+a write of the zero value), assignments, call arguments, returns, `var`
+declarations, and whole-map copies.
+These leave a carrier unproven, and unproven is silent: a compound
+assignment, a range binding, a spread call, a tuple the census cannot read,
+a function or method used as a value, a method named on any interface in
+the program, an address passed to a call outside the program, and a map
+built by a call.
+
+A guard is dead when a numeric comparison against a constant is decided,
+when a `switch` has a `default:` after a case for every enum member, or
+when `len(x)` is compared against a non-empty guarantee.
+Nil guards are not reported: a required field is a plain value in Go, and
+the compiler already refuses `== nil` on it.
+
+### Validation
+
+The first run was on a production service with two generated clients,
+1,503 indexed guarantees.
+`dead-code` reported the four cases a by-hand review had found, plus one it
+had missed (`len(results) == 0` on a `minItems: 1` field), with no false
+positives.
+`widening` reported 15 declarations, each an `int` or `int64` fed only by
+an `int32`, or a `string` fed only by an enum.
