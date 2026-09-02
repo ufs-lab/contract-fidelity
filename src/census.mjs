@@ -62,15 +62,18 @@ function valueUseNode(id) {
   ) {
     return null;
   }
-  // An import or export binding is not itself a use. Under `closedWorld` the
-  // uses are in this program; without it, `isExported` already refuses to
-  // prove anything about an exported function.
+  // An import or export binding is not itself a use. `export default Cell`
+  // and `export { addRow }` name the function; whoever imports it then calls
+  // it or passes it on, and under `closedWorld` that site is in this program
+  // and this census reads it there. Counting the export itself as a use would
+  // put every exported component out of reach of the write census.
   if (
     ts.isImportSpecifier(parent) ||
     ts.isImportClause(parent) ||
     ts.isNamespaceImport(parent) ||
     ts.isImportEqualsDeclaration(parent) ||
-    ts.isExportSpecifier(parent)
+    ts.isExportSpecifier(parent) ||
+    ts.isExportAssignment(parent)
   ) {
     return null;
   }

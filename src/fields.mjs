@@ -295,12 +295,22 @@ export function buildFieldWriteIndex(
       const sourceProp = sourceType
         ? checker.getPropertyOfType(sourceType, name)
         : null;
+      const optional = (prop) => (prop.flags & ts.SymbolFlags.Optional) !== 0;
       // `{ ...state, count: n }` spreads a type into itself. Every field
       // joins with itself, so nothing new arrives and nothing is disproven.
-      if (sourceProp && keyOf(sourceProp) === keyOf(targetProp)) continue;
+      // `{ ...defaults, ...overrides }` with `overrides: Partial<X>` is NOT
+      // that: a mapped type keeps the declaration and drops the requirement,
+      // so the field can arrive absent after all.
+      if (
+        sourceProp &&
+        keyOf(sourceProp) === keyOf(targetProp) &&
+        optional(sourceProp) === optional(targetProp)
+      ) {
+        continue;
+      }
       const unsafe =
         !sourceProp ||
-        (sourceProp.flags & ts.SymbolFlags.Optional) !== 0 ||
+        optional(sourceProp) ||
         dropsGuarantee(
           checker.getTypeOfSymbolAtLocation(sourceProp, sourceExpr),
           checker,
