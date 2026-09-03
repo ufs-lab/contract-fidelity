@@ -151,6 +151,17 @@ func loadErrors(pkgs []*packages.Package) error {
 // Index exposes the contract index for the audit command.
 func (p *Program) Index() *contract.Index { return p.index }
 
+// ModulePath is the scanned module's path, the stable name a caller keys
+// work on this program by.
+func (p *Program) ModulePath() string {
+	for _, pkg := range p.pkgs {
+		if pkg.Module != nil {
+			return pkg.Module.Path
+		}
+	}
+	return ""
+}
+
 // preferTestVariants keeps, for each import path, the variant that
 // includes the test files (`pkg [pkg.test]`) over the plain build, plus the
 // external test packages. Both censuses count test writers, so the test
