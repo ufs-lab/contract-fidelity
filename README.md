@@ -24,8 +24,11 @@ It reports where the two disagree.
 
 ## Install
 
+The package is not on the public npm registry yet.
+Install it from the repository.
+
 ```bash
-npm install --save-dev contract-fidelity
+npm install --save-dev github:ufs-lab/contract-fidelity
 ```
 
 `typescript` is a peer dependency.
@@ -102,22 +105,19 @@ A `range` pattern must capture two numbers, because the bounds come from them.
 The tool rejects an invalid pattern when it loads the configuration.
 It does not accept a pattern and then contribute nothing.
 
-## Status, honestly
+## What is proven, and what is not
 
-Precision is validated.
+Precision is measured.
 The tool ran against three unrelated public SDKs from `openapi-generator`: Lob,
 Conekta and Klaviyo.
 Those SDKs hold approximately 4,850 contract guarantees.
 The tool reported zero false positives.
-That exercise found four portability bugs, and each one now has a regression
-test.
 
-Recall is not validated outside the codebase where the tool was written.
+Recall is not measured outside the codebase the tool was written against.
 Those three SDKs are thin wrappers with no view models, so the tool found no
 true positives in them either.
-Run it on an application that consumes a generated client, and the result is
-genuinely interesting.
-Please open an issue with what you find.
+Run it on an application that consumes a generated client, and open an issue
+with the result.
 
 The prose heuristics are tuned to `openapi-generator` descriptions.
 The required-non-null detection and the enum detection do not depend on the
@@ -174,17 +174,8 @@ Three more cuts, each measured against a real application:
   A whole function signature, an object type spelled out, `any[]`, or the
   declared type repeated back are all diagnostics nobody can apply.
 
-Without these, the rule produced 1,224 findings on a real codebase and about
-half were nonsense.
-With them it produces 515, and each one names an edit.
-
-Two soundness bugs surfaced in the same exercise, and both are fixed.
-A property declaration's own initialiser was not counted as a write, so
-`private rafId: number | null = null` looked always-present and the tool
-proposed narrowing away the very case the field exists for.
-A function that throws on an absent value is a validator whatever it spells
-its parameter, so `assertRequired(value: T | undefined)` is no longer reported
-across its 21 call sites.
+Each rule exists to keep a finding actionable.
+A report that names no edit costs more to read than it saves.
 
 ## The closed world
 
@@ -355,7 +346,7 @@ This exemption stays narrow on purpose.
 A function that returns a default asserts nothing.
 Both stay in scope.
 
-## Soundness: every writer, not only the one we followed
+## Soundness: every writer counts
 
 A guard inside a helper is dead only when every call site hands it a guaranteed
 value.
@@ -728,15 +719,19 @@ Under a `go/analysis` driver there is no down-only baseline; use
 golangci-lint's `issues.new-from-rev` to ratchet, or the CLI for the
 baseline file.
 
-### Validation
+### What it found on a real service
 
-The first run was on a production service with two generated clients,
-1,503 indexed guarantees.
-`dead-code` reported the four cases a by-hand review had found, plus one it
-had missed (`len(results) == 0` on a `minItems: 1` field), with no false
-positives.
-`widening` reported 15 declarations, each an `int` or `int64` fed only by
-an `int32`, or a `string` fed only by an enum.
-With nil guards and inference on, the same service added four
-`created_ids == nil` boundary checks on a required, non-nullable array and
-two inferred non-null checks, each confirmed against the census.
+Measured on a service with two generated clients and 1,503 indexed guarantees.
+
+`dead-code` reported five dead guards with no false positives.
+A by-hand review of the same code had found four of them.
+The fifth was `len(results) == 0` on a field the spec declares `minItems: 1`.
+
+`widening` reported 15 declarations.
+Each one was an `int` or an `int64` fed only by an `int32`, or a `string` fed
+only by an enum.
+
+With nil guards and inference enabled, the same service reported four
+`created_ids == nil` checks on a required, non-nullable array, and two
+inferred non-null checks.
+Each was confirmed against the census.

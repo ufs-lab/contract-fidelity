@@ -37,5 +37,13 @@
   ],
   "devDependencies": {
     "typescript": "^5.9.3"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ufs-lab/contract-fidelity.git"
+  },
+  "homepage": "https://github.com/ufs-lab/contract-fidelity#readme",
+  "bugs": {
+    "url": "https://github.com/ufs-lab/contract-fidelity/issues"
   }
 }
