@@ -1,0 +1,13 @@
+// Line length is a rule about prose, which a reader reflows and a reviewer
+// reads in a narrow diff. A table row and a code line are neither: wrapping a
+// table row breaks the table, and wrapping a command breaks the command.
+{
+  "config": {
+    "MD013": {
+      "line_length": 80,
+      "tables": false,
+      "code_blocks": false
+    }
+  },
+  "globs": ["**/*.md", "!node_modules"]
+}

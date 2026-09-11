@@ -52,6 +52,7 @@ Do not use both files.
   "scanRoots": ["src"],
   "trustContract": true,
   "inferConstraints": true,
+  "proseConstraints": true,
   "closedWorld": true,
   "baselineDir": ".contract-fidelity",
   "docPatterns": []
@@ -67,6 +68,7 @@ Do not use both files.
 | `inferConstraints` | `true` | Whether the checker's own types count as guarantees. |
 | `closedWorld` | `true` | Whether the callers in this program are all the callers. |
 | `baselineDir` | `.contract-fidelity` | Where the tool writes the baselines. |
+| `proseConstraints` | `true` | Whether prose may state a guarantee. |
 | `docPatterns` | `[]` | Extra prose patterns for your own generator. |
 
 `CONTRACT_FIDELITY_CONFIG` names a config file elsewhere than the project
@@ -84,6 +86,32 @@ A project that keeps its code in `app/` or `lib/` must say so.
 Both checks keep a down-only baseline in `baselineDir`.
 You can adopt an existing backlog without a block on every commit.
 Anything new fails.
+
+### Prose is the weakest evidence here
+
+A guarantee can come from a declared type, from a schema keyword, or from a
+regular expression over a doc comment.
+The first two state what the value is.
+The third states what someone wrote about it.
+
+A finding records which of them it rests on, in `derivation`, and the audit
+prints the sentence a prose guarantee matched.
+Read that sentence before you delete anything.
+
+A hedge anywhere in a field's description voids that field's guarantee.
+`Must be greater than zero unless the directive is present` states a
+condition, and `Must be greater than zero for debits; credits may be zero`
+states one in its second clause.
+Neither yields a guarantee.
+This rule is deliberately blunt: a hedge about some other field mentioned in
+the same description also voids the guarantee.
+Losing a guarantee costs a finding, and inventing one costs a correct check.
+
+Set `proseConstraints` to `false` to decline prose entirely.
+The required-non-null and enum-member detections do not read prose and are
+unaffected, and they carry most of the value in practice.
+A project where a wrongly deleted guard costs more than a missed finding
+should run this way.
 
 ### Custom doc patterns
 

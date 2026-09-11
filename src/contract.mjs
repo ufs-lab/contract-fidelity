@@ -145,10 +145,16 @@ export function constraintForClientProperty(symbol, checker, atNode) {
   // classification and declared a string field to be a number in [10, 20].
   // Gating on the field's own type kills the class: a description is evidence
   // about the value only where it agrees with the type.
-  const fromDoc = constraintFromDoc(doc, {
-    isArray: isArrayLike(type, checker),
-    extraPatterns: projectDocPatterns(),
-  });
+  // `proseConstraints: false` declines every guarantee that rests on a regular
+  // expression over a doc comment. The declared-type detections below are
+  // unaffected, and they carry most of the value. A project where a wrongly
+  // deleted guard costs more than a missed finding should run this way.
+  const fromDoc = getConfig().proseConstraints
+    ? constraintFromDoc(doc, {
+        isArray: isArrayLike(type, checker),
+        extraPatterns: projectDocPatterns(),
+      })
+    : null;
   if (fromDoc && (!fromDoc.numeric || baseKind === "number")) {
     return { ...fromDoc, field: symbol.getName(), baseKind };
   }
@@ -163,6 +169,7 @@ export function constraintForClientProperty(symbol, checker, atNode) {
   if (members) {
     return {
       kind: "enum-member",
+      derivation: "declared-type",
       members,
       sourceType,
       type,
@@ -176,6 +183,7 @@ export function constraintForClientProperty(symbol, checker, atNode) {
   if (!isOptionalProperty(symbol) && !typeIncludesNullish(type)) {
     return {
       kind: "required-non-null",
+      derivation: "declared-type",
       sourceType,
       // Kept so two guarantees can be compared as types, not as strings.
       type,

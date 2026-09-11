@@ -215,6 +215,27 @@ test("inferConstraints false leaves only the contract-anchored findings", () => 
   for (const row of rows) assert.equal(row.origin, "contract");
 });
 
+// A numeric bound read out of a doc comment by regular expression is the
+// weakest evidence the tool accepts, and its findings recommend deleting a
+// guard. A project where a wrongly deleted guard costs more than a missed
+// finding turns prose off and keeps the declared-type detections.
+test("proseConstraints false drops the guarantees read out of doc comments", () => {
+  const withProse = run(["contracts"]);
+  const withoutProse = runWithConfig({ proseConstraints: false }, ["contracts"]);
+
+  // The fixture client documents both bounds in prose. Without them the test
+  // proves nothing, so it asserts they are there first.
+  assert.match(withProse, /positive\s+Movement\.amount/);
+  assert.match(withProse, /non-negative\s+MovementModel\.staged/);
+
+  assert.doesNotMatch(withoutProse, /positive\s+Movement\.amount/);
+  assert.doesNotMatch(withoutProse, /non-negative\s+MovementModel\.staged/);
+
+  // Turning prose off must not turn the declared-type detections off with it.
+  assert.match(withProse, /enum-member\s+Movement\.scope/);
+  assert.match(withoutProse, /enum-member\s+Movement\.scope/);
+});
+
 test("an inferred constraint carries a base KIND, not a printed type", () => {
   // Setting `baseKind` to `checker.typeToString(...)` made every typeof and
   // Array.isArray verdict garbage: `Array.isArray` on a mapped array was
