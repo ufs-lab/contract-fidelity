@@ -27,9 +27,22 @@ const DEFAULTS = {
   // are the team's deliberate choice and only widened cases are reported.
   trustContract: true,
 
+  // Whether a guarantee may be read out of a doc comment by regular
+  // expression, as opposed to a declared type or a schema keyword.
+  //
+  // Prose is the weakest evidence this tool accepts, and a numeric bound read
+  // from prose can put a real guard on the dead list, whose documented fix is
+  // to delete it. Where a wrongly deleted check costs more than a missed
+  // finding, set this to false. The required-non-null and enum-member
+  // detections do not depend on prose and are unaffected.
+  //
+  // This governs the built-in patterns and `docPatterns` alike.
+  proseConstraints: true,
+
   // Extra prose patterns for guarantees a generator writes into descriptions
   // but cannot express in the type. Each is { id, source, flags, kind }
-  // where kind is one of positive | non-negative | range.
+  // where kind is one of positive | non-negative | range. Ignored when
+  // `proseConstraints` is false.
   docPatterns: [],
 
   // The tsconfig whose program is analysed.
@@ -92,6 +105,17 @@ export function loadConfig(repoRoot) {
     throw new Error(
       "contract-fidelity: `contractPackages` must list at least one package scope - without it nothing is a contract and the scan passes vacuously.",
     );
+  }
+
+  // A misspelled boolean must not read as false and silently change what the
+  // analysis trusts. `proseConstraints: "false"` is a string, and a string is
+  // truthy, so the setting a reader thought they had turned off would stay on.
+  for (const key of ["trustContract", "inferConstraints", "closedWorld", "proseConstraints"]) {
+    if (typeof config[key] !== "boolean") {
+      throw new Error(
+        `contract-fidelity: \`${key}\` must be true or false, got ${JSON.stringify(config[key])}.`,
+      );
+    }
   }
   return config;
 }

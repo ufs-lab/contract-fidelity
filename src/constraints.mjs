@@ -255,12 +255,27 @@ export function constraintFromDoc(
 ) {
   if (typeof doc !== "string" || doc.length === 0) return null;
 
-  // Sentence-level so a hedge in one clause cannot void a guarantee stated
-  // in another, and prose about a different field cannot lend its numbers.
+  // A hedge anywhere in the description voids the whole description.
+  //
+  // Matching stays sentence-level, so prose about a different field cannot
+  // lend its numbers to this one. Hedge detection does NOT, because a doc
+  // comment describes ONE field and a condition stated in any clause is a
+  // condition on that field's value. Read per clause, `Must be greater than
+  // zero for debits; credits may be zero` yields a positive guarantee from
+  // the first clause while the second says plainly that zero is legal, and a
+  // correct `amount > 0` check is then reported as always true. The fix for
+  // a dead guard is to delete it, so the cost of that error is a deleted
+  // check on a value the contract does not constrain.
+  //
+  // This is deliberately conservative. A hedge about some other field
+  // mentioned in this description also voids this field's guarantee, which
+  // loses a real guarantee. Losing one costs a finding. Inventing one costs
+  // a check.
+  if (HEDGE_RE.test(doc)) return null;
+
   const sentences = doc.split(/(?<=[.;])\s+/);
 
   for (const sentence of sentences) {
-    if (HEDGE_RE.test(sentence)) continue;
 
     if (
       isArray &&
@@ -269,6 +284,7 @@ export function constraintFromDoc(
     ) {
       return {
         kind: "non-empty-array",
+        derivation: "prose",
         numeric: false,
         interval: interval(1, Infinity),
         why: "the contract guarantees a non-empty collection",
@@ -287,6 +303,10 @@ export function constraintFromDoc(
           // name its kind anything, and the caller must still refuse to apply
           // a numeric guarantee to a field that is not a number.
           kind: pattern.id,
+          // Read out of a doc comment by regular expression. Weaker evidence
+          // than a declared type or a schema keyword, and the caller may
+          // decline it. See `proseConstraints` in the configuration.
+          derivation: "prose",
           numeric: true,
           interval: pattern.interval(m),
           why: pattern.why,
